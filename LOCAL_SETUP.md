@@ -143,6 +143,29 @@ cliproxy-upstream-status codex --json
 
 The local command above reads the localhost-only Management API endpoint `GET /v0/management/runtime-auths?provider=codex`.
 
+Show the latest seen upstream OAuth quota per account:
+
+```bash
+cliproxy-oauth-quota
+cliproxy-oauth-quota --details
+cliproxy-oauth-quota --probe
+cliproxy-oauth-quota --json
+```
+
+Quota notes:
+
+- `cliproxy-oauth-quota` reads recent request logs under `/opt/cliproxyapi/logs` and extracts the latest seen `X-Codex-*` quota headers per OAuth account.
+- `P-LEFT` / `S-LEFT` are computed as `100 - used_percent`.
+- If an account has not served a recent request yet, its quota fields remain `unknown` / `-` until the next successful upstream response is logged.
+- `cliproxy-oauth-quota --probe` sends one small live request to each OAuth account and refreshes the displayed quota from the upstream response headers directly.
+
+Remote HTTPS API for authenticated clients:
+
+```bash
+curl 'https://tradetd.cloud-ip.cc/v1/api/oauth-quota?probe=1' \
+  -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
+```
+
 State meanings:
 
 - `online`: currently available for routing

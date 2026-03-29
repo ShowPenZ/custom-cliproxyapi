@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -572,7 +573,7 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, requestedModel, upstreamModel, resultModel string, attemptNumber int, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
@@ -581,6 +582,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
 				failed = true
+				recordAuthRouteOutcome(ctx, auth, provider, requestedModel, upstreamModel, attemptNumber, false, chunk.Err)
 				rerr := &Error{Message: chunk.Err.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
@@ -615,13 +617,14 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 		}
 		if !failed {
+			recordAuthRouteOutcome(ctx, auth, provider, requestedModel, upstreamModel, attemptNumber, true, nil)
 			m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true})
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
 }
 
-func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, execModels []string, pooled bool) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, execModels []string, pooled bool, attemptNumber int) (*cliproxyexecutor.StreamResult, error) {
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
@@ -635,6 +638,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
+			recordAuthRouteOutcome(ctx, auth, provider, routeModel, execModel, attemptNumber, false, errStream)
 			rerr := &Error{Message: errStream.Error()}
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errStream); ok && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
@@ -655,6 +659,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				discardStreamChunks(streamResult.Chunks)
 				return nil, errCtx
 			}
+			recordAuthRouteOutcome(ctx, auth, provider, routeModel, execModel, attemptNumber, false, bootstrapErr)
 			if isRequestInvalidError(bootstrapErr) {
 				rerr := &Error{Message: bootstrapErr.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
@@ -691,6 +696,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 
 		if closed && len(buffered) == 0 {
 			emptyErr := &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
+			recordAuthRouteOutcome(ctx, auth, provider, routeModel, execModel, attemptNumber, false, emptyErr)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr}
 			m.MarkResult(ctx, result)
 			if idx < len(execModels)-1 {
@@ -706,7 +712,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining), nil
+		return m.wrapStreamResult(ctx, auth.Clone(), provider, routeModel, execModel, resultModel, attemptNumber, streamResult.Headers, buffered, remaining), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}
@@ -1086,6 +1092,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
+		attemptNumber := len(tried) + 1
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
@@ -1114,6 +1121,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				recordAuthRouteOutcome(execCtx, auth, provider, routeModel, upstreamModel, attemptNumber, false, errExec)
 				result.Error = &Error{Message: errExec.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
@@ -1128,6 +1136,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				authErr = errExec
 				continue
 			}
+			recordAuthRouteOutcome(execCtx, auth, provider, routeModel, upstreamModel, attemptNumber, true, nil)
 			m.MarkResult(execCtx, result)
 			return resp, nil
 		}
@@ -1164,6 +1173,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
+		attemptNumber := len(tried) + 1
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
@@ -1192,6 +1202,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				recordAuthRouteOutcome(execCtx, auth, provider, routeModel, upstreamModel, attemptNumber, false, errExec)
 				result.Error = &Error{Message: errExec.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
@@ -1206,6 +1217,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				authErr = errExec
 				continue
 			}
+			recordAuthRouteOutcome(execCtx, auth, provider, routeModel, upstreamModel, attemptNumber, true, nil)
 			m.MarkResult(execCtx, result)
 			return resp, nil
 		}
@@ -1250,6 +1262,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			return nil, errPick
 		}
+		attemptNumber := len(tried) + 1
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
@@ -1266,7 +1279,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, req, opts, routeModel, models, pooled)
+		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, req, opts, routeModel, models, pooled, attemptNumber)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
@@ -2922,6 +2935,71 @@ func debugLogAuthSelection(entry *log.Entry, auth *Auth, provider string, model 
 		ident := formatOauthIdentity(auth, provider, accountInfo)
 		entry.Debugf("Use OAuth %s for model %s%s", ident, model, suffix)
 	}
+}
+
+func recordAuthRouteOutcome(ctx context.Context, auth *Auth, provider, requestedModel, upstreamModel string, attemptNumber int, success bool, err error) {
+	if auth == nil {
+		return
+	}
+	line := formatAuthRouteOutcome(auth, provider, requestedModel, upstreamModel, attemptNumber, success, err)
+	if line == "" {
+		return
+	}
+	logging.AppendAuthRouteResponse(ctx, line)
+	entry := logEntryWithRequestID(ctx)
+	if success {
+		entry.Info(line)
+		return
+	}
+	entry.Warn(line)
+}
+
+func formatAuthRouteOutcome(auth *Auth, provider, requestedModel, upstreamModel string, attemptNumber int, success bool, err error) string {
+	if auth == nil {
+		return ""
+	}
+	provider = strings.TrimSpace(provider)
+	requestedModel = strings.TrimSpace(requestedModel)
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	authID := strings.TrimSpace(auth.ID)
+	label := strings.TrimSpace(auth.Label)
+	accountType, accountInfo := auth.AccountInfo()
+	accountInfo = strings.TrimSpace(accountInfo)
+	if label == "" {
+		label = accountInfo
+	}
+
+	status := "failed"
+	if success {
+		status = "succeeded"
+	}
+
+	parts := []string{fmt.Sprintf("Attempt %d %s", attemptNumber, status)}
+	if provider != "" {
+		parts = append(parts, fmt.Sprintf("provider=%s", provider))
+	}
+	if requestedModel != "" {
+		parts = append(parts, fmt.Sprintf("requested_model=%s", requestedModel))
+	}
+	if upstreamModel != "" {
+		parts = append(parts, fmt.Sprintf("upstream_model=%s", upstreamModel))
+	}
+	if authID != "" {
+		parts = append(parts, fmt.Sprintf("auth_id=%s", authID))
+	}
+	if label != "" {
+		parts = append(parts, fmt.Sprintf("label=%s", label))
+	}
+	if accountType != "" {
+		parts = append(parts, fmt.Sprintf("auth_type=%s", accountType))
+	}
+	if accountType == "api_key" && accountInfo != "" {
+		parts = append(parts, fmt.Sprintf("account=%s", util.HideAPIKey(accountInfo)))
+	}
+	if err != nil {
+		parts = append(parts, fmt.Sprintf("error=%s", strings.TrimSpace(err.Error())))
+	}
+	return strings.Join(parts, " ")
 }
 
 func formatOauthIdentity(auth *Auth, provider string, accountInfo string) string {

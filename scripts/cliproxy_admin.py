@@ -6,6 +6,7 @@ import re
 import secrets
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -19,6 +20,30 @@ DEFAULT_PUBLIC_API = os.environ.get("CLIPROXY_PUBLIC_API", "https://tradetd.clou
 LOCAL_MGMT_HOST = os.environ.get("CLIPROXY_LOCAL_MGMT_HOST", "127.0.0.1")
 LOCAL_MGMT_PORT = int(os.environ.get("CLIPROXY_LOCAL_MGMT_PORT", "8317"))
 DEFAULT_MODEL_EXAMPLE = os.environ.get("CLIPROXY_MODEL_EXAMPLE", "gpt-5.4-mini")
+DEFAULT_LOG_DIR = os.environ.get(
+    "CLIPROXY_LOG_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"),
+)
+DEFAULT_OAUTH_PROBE_TIMEOUT_SECONDS = int(os.environ.get("CLIPROXY_OAUTH_PROBE_TIMEOUT_SECONDS", "30"))
+DEFAULT_OAUTH_PROBE_MODEL = os.environ.get("CLIPROXY_OAUTH_PROBE_MODEL", DEFAULT_MODEL_EXAMPLE)
+DEFAULT_OAUTH_PROBE_ENDPOINT = os.environ.get(
+    "CLIPROXY_OAUTH_PROBE_ENDPOINT",
+    "https://chatgpt.com/backend-api/codex/responses/compact",
+)
+DEFAULT_OAUTH_PROBE_TEXT = os.environ.get("CLIPROXY_OAUTH_PROBE_TEXT", "Reply with OK only.")
+
+LOG_SECTION_RE = re.compile(r"^=== (.+?) ===$")
+AUTH_TRACE_FIELD_RE = re.compile(r"([a-z_]+)=([^\s]+)")
+HTTP_STATUS_RE = re.compile(r"HTTP/\d+(?:\.\d+)?\s+(\d+)")
+OAUTH_QUOTA_HEADER_FIELDS = {
+    "x-codex-plan-type": "plan_type",
+    "x-codex-primary-reset-after-seconds": "primary_reset_after_seconds",
+    "x-codex-primary-reset-at": "primary_reset_at_epoch",
+    "x-codex-primary-used-percent": "primary_used_percent",
+    "x-codex-secondary-reset-after-seconds": "secondary_reset_after_seconds",
+    "x-codex-secondary-reset-at": "secondary_reset_at_epoch",
+    "x-codex-secondary-used-percent": "secondary_used_percent",
+}
 
 
 def fail(message: str, code: int = 1) -> None:
@@ -67,6 +92,400 @@ def normalise_iso(value: str) -> str:
     except ValueError:
         return value
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def normalise_epoch_seconds(value: Any) -> str:
+    text = str(value).strip()
+    if not text:
+        return "-"
+    try:
+        seconds = int(float(text))
+    except ValueError:
+        return text
+    return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def int_from_text(value: Any) -> int | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def remaining_percent(value: Any) -> str:
+    used = int_from_text(value)
+    if used is None:
+        return "-"
+    return str(max(0, 100 - used))
+
+
+def extract_auth_trace_fields(line: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for match in AUTH_TRACE_FIELD_RE.finditer(line):
+        fields[match.group(1)] = match.group(2)
+    return fields
+
+
+def account_from_auth_fields(fields: dict[str, str]) -> str:
+    label = fields.get("label", "").strip()
+    if label:
+        return label
+
+    auth_id = fields.get("auth_id", "").strip()
+    if not auth_id:
+        return "-"
+
+    account = auth_id.removesuffix(".json")
+    if account.startswith("codex-"):
+        account = account[len("codex-"):]
+    account = re.sub(r"-(free|plus|pro|team|enterprise)$", "", account)
+    return account or auth_id
+
+
+def blank_oauth_quota_row(account: str) -> dict[str, Any]:
+    return {
+        "account": account,
+        "state": "-",
+        "plan_type": "-",
+        "last_seen": "-",
+        "auth_id": "-",
+        "source_log": "-",
+        "primary_used_percent": "-",
+        "primary_remaining_percent": "-",
+        "primary_reset_at": "-",
+        "primary_reset_at_epoch": "-",
+        "primary_reset_after_seconds": "-",
+        "secondary_used_percent": "-",
+        "secondary_remaining_percent": "-",
+        "secondary_reset_at": "-",
+        "secondary_reset_at_epoch": "-",
+        "secondary_reset_after_seconds": "-",
+        "auth_index": "-",
+        "auth_file_path": "-",
+        "probe_model": "-",
+        "probe_status_code": "-",
+        "probe_error": "-",
+    }
+
+
+def parse_oauth_quota_log(path: str) -> dict[str, Any] | None:
+    current_section = ""
+    request_timestamp = ""
+    auth_timestamp = ""
+    response_timestamp = ""
+    auth_fields: dict[str, str] = {}
+    headers: dict[str, str] = {}
+    in_headers = False
+
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            stripped = line.strip()
+
+            section_match = LOG_SECTION_RE.match(stripped)
+            if section_match:
+                current_section = section_match.group(1)
+                in_headers = False
+                continue
+
+            if current_section == "REQUEST INFO" and stripped.startswith("Timestamp: "):
+                request_timestamp = stripped.split(":", 1)[1].strip()
+                continue
+
+            if current_section == "AUTH ROUTING RESULT":
+                if stripped.startswith("Timestamp: "):
+                    auth_timestamp = stripped.split(":", 1)[1].strip()
+                    continue
+                if "auth_type=oauth" in stripped and "succeeded" in stripped:
+                    auth_fields = extract_auth_trace_fields(stripped)
+                continue
+
+            if not current_section.startswith("API RESPONSE"):
+                continue
+
+            if stripped.startswith("Timestamp: "):
+                response_timestamp = stripped.split(":", 1)[1].strip()
+                continue
+
+            if stripped == "Headers:":
+                in_headers = True
+                continue
+
+            if stripped == "Body:":
+                break
+
+            if not in_headers or ":" not in line:
+                continue
+
+            key, value = line.split(":", 1)
+            normalized_key = key.strip().lower()
+            field_name = OAUTH_QUOTA_HEADER_FIELDS.get(normalized_key)
+            if field_name:
+                headers[field_name] = value.strip()
+
+    account = account_from_auth_fields(auth_fields)
+    if account == "-" or not headers:
+        return None
+
+    snapshot: dict[str, Any] = {
+        "account": account,
+        "auth_id": auth_fields.get("auth_id", "-").strip() or "-",
+        "source_log": os.path.basename(path),
+        "last_seen": normalise_iso(response_timestamp or auth_timestamp or request_timestamp),
+        "plan_type": headers.get("plan_type", "-").strip() or "-",
+        "primary_used_percent": headers.get("primary_used_percent", "-").strip() or "-",
+        "primary_reset_at_epoch": headers.get("primary_reset_at_epoch", "-").strip() or "-",
+        "primary_reset_after_seconds": headers.get("primary_reset_after_seconds", "-").strip() or "-",
+        "secondary_used_percent": headers.get("secondary_used_percent", "-").strip() or "-",
+        "secondary_reset_at_epoch": headers.get("secondary_reset_at_epoch", "-").strip() or "-",
+        "secondary_reset_after_seconds": headers.get("secondary_reset_after_seconds", "-").strip() or "-",
+    }
+    snapshot["primary_remaining_percent"] = remaining_percent(snapshot["primary_used_percent"])
+    snapshot["primary_reset_at"] = normalise_epoch_seconds(snapshot["primary_reset_at_epoch"])
+    snapshot["secondary_remaining_percent"] = remaining_percent(snapshot["secondary_used_percent"])
+    snapshot["secondary_reset_at"] = normalise_epoch_seconds(snapshot["secondary_reset_at_epoch"])
+    return snapshot
+
+
+def collect_oauth_quota_rows(log_dir: str) -> list[dict[str, Any]]:
+    runtime_auths = get_runtime_auths("codex")
+    rows: dict[str, dict[str, Any]] = {}
+    pending: set[str] = set()
+
+    for entry in runtime_auths:
+        if str(entry.get("account_type", "")).strip() != "oauth":
+            continue
+        account = display_account(entry)
+        if not account:
+            continue
+        row = rows.setdefault(account, blank_oauth_quota_row(account))
+        row["state"] = str(entry.get("state", "")).strip() or "-"
+        runtime_plan = str(entry.get("plan_type", "")).strip()
+        if runtime_plan:
+            row["plan_type"] = runtime_plan
+        pending.add(account)
+
+    stop_when_runtime_accounts_found = bool(pending)
+    if os.path.isdir(log_dir):
+        for name in sorted(os.listdir(log_dir), reverse=True):
+            if not name.startswith("v1-responses-") or not name.endswith(".log"):
+                continue
+            snapshot = parse_oauth_quota_log(os.path.join(log_dir, name))
+            if snapshot is None:
+                continue
+            account = str(snapshot.get("account", "")).strip()
+            if not account:
+                continue
+            row = rows.setdefault(account, blank_oauth_quota_row(account))
+            if row.get("last_seen", "-") != "-":
+                continue
+            for key, value in snapshot.items():
+                if key == "account":
+                    continue
+                if str(value).strip() in {"", "-"} and str(row.get(key, "")).strip() not in {"", "-"}:
+                    continue
+                row[key] = value
+            pending.discard(account)
+            if stop_when_runtime_accounts_found and not pending:
+                break
+
+    return sorted(rows.values(), key=lambda item: str(item.get("account", "")).lower())
+
+
+def collect_oauth_auth_files() -> list[dict[str, Any]]:
+    auth_files = get_auth_files("codex")
+    out: list[dict[str, Any]] = []
+    for entry in auth_files:
+        if str(entry.get("account_type", "")).strip() != "oauth":
+            continue
+        account = display_account(entry)
+        if not account:
+            continue
+        out.append(entry)
+    return out
+
+
+def merge_oauth_auth_file_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {
+        str(row.get("account", "")).strip(): dict(row)
+        for row in rows
+        if str(row.get("account", "")).strip()
+    }
+
+    for entry in collect_oauth_auth_files():
+        account = display_account(entry)
+        if not account:
+            continue
+        row = merged.setdefault(account, blank_oauth_quota_row(account))
+        auth_id = str(entry.get("id", "")).strip()
+        auth_index = str(entry.get("auth_index", "")).strip()
+        auth_path = str(entry.get("path", "")).strip()
+        if auth_id and str(row.get("auth_id", "")).strip() in {"", "-"}:
+            row["auth_id"] = auth_id
+        if auth_index:
+            row["auth_index"] = auth_index
+        if auth_path:
+            row["auth_file_path"] = auth_path
+        if str(row.get("plan_type", "")).strip() in {"", "-"}:
+            plan_type = str(entry.get("id_token", {}).get("plan_type", "")).strip()
+            if plan_type:
+                row["plan_type"] = plan_type
+
+    return sorted(merged.values(), key=lambda item: str(item.get("account", "")).lower())
+
+
+def build_oauth_probe_body(model: str) -> str:
+    payload = {
+        "model": model,
+        "instructions": "",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": DEFAULT_OAUTH_PROBE_TEXT,
+                    }
+                ],
+            }
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def parse_oauth_probe_output(output: str, model: str) -> dict[str, Any]:
+    headers: dict[str, str] = {}
+    status_code = "-"
+    error_line = "-"
+
+    for line in output.splitlines():
+        stripped = line.rstrip()
+        if not stripped:
+            continue
+
+        status_match = HTTP_STATUS_RE.search(stripped)
+        if status_match:
+            status_code = status_match.group(1)
+            continue
+
+        if stripped.lower().startswith("wget:"):
+            error_line = stripped
+            continue
+
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        normalized_key = key.strip().lower()
+        field_name = OAUTH_QUOTA_HEADER_FIELDS.get(normalized_key)
+        if field_name:
+            headers[field_name] = value.strip()
+
+    snapshot: dict[str, Any] = {
+        "probe_model": model,
+        "probe_status_code": status_code,
+        "probe_error": error_line,
+    }
+    if headers:
+        snapshot["source_log"] = "live-probe"
+        snapshot["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        snapshot["plan_type"] = headers.get("plan_type", "-").strip() or "-"
+        snapshot["primary_used_percent"] = headers.get("primary_used_percent", "-").strip() or "-"
+        snapshot["primary_remaining_percent"] = remaining_percent(snapshot["primary_used_percent"])
+        snapshot["primary_reset_at_epoch"] = headers.get("primary_reset_at_epoch", "-").strip() or "-"
+        snapshot["primary_reset_at"] = normalise_epoch_seconds(snapshot["primary_reset_at_epoch"])
+        snapshot["primary_reset_after_seconds"] = headers.get("primary_reset_after_seconds", "-").strip() or "-"
+        snapshot["secondary_used_percent"] = headers.get("secondary_used_percent", "-").strip() or "-"
+        snapshot["secondary_remaining_percent"] = remaining_percent(snapshot["secondary_used_percent"])
+        snapshot["secondary_reset_at_epoch"] = headers.get("secondary_reset_at_epoch", "-").strip() or "-"
+        snapshot["secondary_reset_at"] = normalise_epoch_seconds(snapshot["secondary_reset_at_epoch"])
+        snapshot["secondary_reset_after_seconds"] = headers.get("secondary_reset_after_seconds", "-").strip() or "-"
+        snapshot["probe_error"] = "-"
+    return snapshot
+
+
+def probe_oauth_quota_row(row: dict[str, Any], model: str, timeout_seconds: int) -> dict[str, Any]:
+    auth_path = str(row.get("auth_file_path", "")).strip()
+    if not auth_path or auth_path == "-":
+        return {"probe_model": model, "probe_status_code": "-", "probe_error": "auth file path unavailable"}
+
+    body = build_oauth_probe_body(model)
+    session_id = f"probe-{uuid.uuid4().hex}"
+    script = r'''
+f="$PROBE_PATH"
+tok=$(tr -d '\n' < "$f" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+acct=$(tr -d '\n' < "$f" | sed -n 's/.*"account_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+if [ -z "$tok" ]; then
+  echo "wget: access_token not found"
+  exit 3
+fi
+if [ -z "$acct" ]; then
+  echo "wget: account_id not found"
+  exit 4
+fi
+wget -qS -O - \
+  --header "Authorization: Bearer $tok" \
+  --header "Content-Type: application/json" \
+  --header "Accept: application/json" \
+  --header "Connection: Keep-Alive" \
+  --header "Originator: codex_cli_rs" \
+  --header "User-Agent: codex_cli_rs/0.116.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464" \
+  --header "Chatgpt-Account-Id: $acct" \
+  --header "Session_id: $PROBE_SESSION" \
+  --header "X-Client-Request-Id: $PROBE_SESSION" \
+  --post-data "$PROBE_BODY" \
+  "$PROBE_ENDPOINT" 2>&1
+'''
+    cmd = [
+        "docker",
+        "exec",
+        "-e",
+        f"PROBE_PATH={auth_path}",
+        "-e",
+        f"PROBE_BODY={body}",
+        "-e",
+        f"PROBE_SESSION={session_id}",
+        "-e",
+        f"PROBE_ENDPOINT={DEFAULT_OAUTH_PROBE_ENDPOINT}",
+        DEFAULT_CONTAINER,
+        "/bin/sh",
+        "-ec",
+        script,
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(1, timeout_seconds),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"probe_model": model, "probe_status_code": "-", "probe_error": f"probe timed out after {timeout_seconds}s"}
+
+    output = proc.stdout or ""
+    if proc.stderr:
+        output = output + ("\n" if output else "") + proc.stderr
+
+    snapshot = parse_oauth_probe_output(output, model)
+    has_quota = any(str(snapshot.get(key, "")).strip() not in {"", "-"} for key in ("primary_used_percent", "secondary_used_percent"))
+    if not has_quota and proc.returncode != 0 and str(snapshot.get("probe_error", "")).strip() in {"", "-"}:
+        snapshot["probe_error"] = f"probe exited with code {proc.returncode}"
+    return snapshot
+
+
+def apply_oauth_probe(rows: list[dict[str, Any]], model: str, timeout_seconds: int) -> list[dict[str, Any]]:
+    for row in rows:
+        snapshot = probe_oauth_quota_row(row, model, timeout_seconds)
+        for key, value in snapshot.items():
+            if str(value).strip() in {"", "-"} and str(row.get(key, "")).strip() not in {"", "-"}:
+                continue
+            row[key] = value
+    return rows
 
 
 def decode_chunked(data: bytes) -> bytes:
@@ -213,6 +632,14 @@ def get_runtime_auths(provider: str | None = None) -> list[dict[str, Any]]:
         path += f"?provider={provider.strip()}"
     payload = api_json("GET", path)
     return list(payload.get("auths", []))
+
+
+def get_auth_files(provider: str | None = None) -> list[dict[str, Any]]:
+    path = "/v0/management/auth-files"
+    if provider:
+        path += f"?provider={provider.strip()}"
+    payload = api_json("GET", path)
+    return list(payload.get("files", []))
 
 
 def generate_key(username: str) -> str:
@@ -533,6 +960,66 @@ def command_upstream_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_oauth_quota(args: argparse.Namespace) -> int:
+    rows = merge_oauth_auth_file_rows(collect_oauth_quota_rows(args.log_dir))
+    if args.probe:
+        rows = apply_oauth_probe(rows, args.probe_model, args.probe_timeout)
+
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.probe:
+        print("Probe note: --probe sends one small live request to each OAuth account and consumes a small amount of quota.")
+        print("Displayed quota comes from the live probe when it succeeds; otherwise it falls back to the latest seen log headers.")
+    else:
+        print("Quota note: this is the latest X-Codex-* quota header seen for each OAuth account.")
+        print("If an account has not handled a recent request yet, its remaining quota stays unknown.")
+
+    if not rows:
+        print()
+        print("No OAuth upstream accounts found.")
+        return 0
+
+    print()
+    print(
+        f"{'ACCOUNT':<32} {'STATE':<12} {'PLAN':<8} "
+        f"{'P-LEFT':>6} {'P-USED':>6} {'P-RESET':<19} "
+        f"{'S-LEFT':>6} {'S-USED':>6} {'S-RESET':<19} "
+        f"{'LAST SEEN':<19}"
+    )
+    for row in rows:
+        account = str(row.get("account", "")).strip() or "-"
+        state = str(row.get("state", "")).strip() or "-"
+        plan_type = str(row.get("plan_type", "")).strip() or "-"
+        p_left = str(row.get("primary_remaining_percent", "")).strip() or "-"
+        p_used = str(row.get("primary_used_percent", "")).strip() or "-"
+        p_reset = str(row.get("primary_reset_at", "")).strip() or "-"
+        s_left = str(row.get("secondary_remaining_percent", "")).strip() or "-"
+        s_used = str(row.get("secondary_used_percent", "")).strip() or "-"
+        s_reset = str(row.get("secondary_reset_at", "")).strip() or "-"
+        last_seen = str(row.get("last_seen", "")).strip() or "-"
+        print(
+            f"{account:<32} {state:<12} {plan_type:<8} "
+            f"{p_left:>6} {p_used:>6} {p_reset:<19} "
+            f"{s_left:>6} {s_used:>6} {s_reset:<19} "
+            f"{last_seen:<19}"
+        )
+        if args.details:
+            source_log = str(row.get("source_log", "")).strip() or "-"
+            auth_id = str(row.get("auth_id", "")).strip() or "-"
+            p_after = str(row.get("primary_reset_after_seconds", "")).strip() or "-"
+            s_after = str(row.get("secondary_reset_after_seconds", "")).strip() or "-"
+            print(f"  - source_log={source_log} auth_id={auth_id}")
+            print(f"  - primary_reset_after_seconds={p_after} secondary_reset_after_seconds={s_after}")
+            if args.probe:
+                probe_model = str(row.get("probe_model", "")).strip() or "-"
+                probe_status_code = str(row.get("probe_status_code", "")).strip() or "-"
+                probe_error = str(row.get("probe_error", "")).strip() or "-"
+                print(f"  - probe_model={probe_model} probe_status_code={probe_status_code} probe_error={probe_error}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage CLIProxyAPI client keys and codex upstreams locally.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -591,6 +1078,32 @@ def build_parser() -> argparse.ArgumentParser:
     upstream_status_parser.add_argument("--json", action="store_true", help="print raw JSON")
     upstream_status_parser.add_argument("--details", action="store_true", help="show extra status fields")
     upstream_status_parser.set_defaults(func=command_upstream_status)
+
+    oauth_quota_parser = sub.add_parser("oauth-quota", help="show the latest seen upstream OAuth quota headers")
+    oauth_quota_parser.add_argument("--json", action="store_true", help="print raw JSON")
+    oauth_quota_parser.add_argument("--details", action="store_true", help="show source log and reset-after values")
+    oauth_quota_parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="actively query each OAuth account with a small live request",
+    )
+    oauth_quota_parser.add_argument(
+        "--probe-model",
+        default=DEFAULT_OAUTH_PROBE_MODEL,
+        help=f"model used for live probes (default: {DEFAULT_OAUTH_PROBE_MODEL})",
+    )
+    oauth_quota_parser.add_argument(
+        "--probe-timeout",
+        type=int,
+        default=DEFAULT_OAUTH_PROBE_TIMEOUT_SECONDS,
+        help=f"timeout in seconds for each live probe (default: {DEFAULT_OAUTH_PROBE_TIMEOUT_SECONDS})",
+    )
+    oauth_quota_parser.add_argument(
+        "--log-dir",
+        default=DEFAULT_LOG_DIR,
+        help=f"request log directory (default: {DEFAULT_LOG_DIR})",
+    )
+    oauth_quota_parser.set_defaults(func=command_oauth_quota)
 
     return parser
 

@@ -71,6 +71,8 @@ type RequestStatistics struct {
 	requestsByHour map[int]int64
 	tokensByDay    map[string]int64
 	tokensByHour   map[int]int64
+
+	persistence *statsPersistence
 }
 
 // apiStats holds aggregated metrics for a single API key.
@@ -182,7 +184,6 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	hourKey := timestamp.Hour()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	s.totalRequests++
 	if success {
@@ -210,6 +211,8 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	s.requestsByHour[hourKey]++
 	s.tokensByDay[dayKey] += totalTokens
 	s.tokensByHour[hourKey] += totalTokens
+	s.mu.Unlock()
+	s.requestPersist()
 }
 
 func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
@@ -284,6 +287,70 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 	return result
 }
 
+// SnapshotForAPI returns a statistics snapshot limited to a single client API key.
+func (s *RequestStatistics) SnapshotForAPI(apiKey string) StatisticsSnapshot {
+	result := StatisticsSnapshot{}
+	if s == nil {
+		return result
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return result
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats, ok := s.apis[apiKey]
+	if !ok || stats == nil {
+		return result
+	}
+
+	result.APIs = make(map[string]APISnapshot, 1)
+	result.RequestsByDay = make(map[string]int64)
+	result.RequestsByHour = make(map[string]int64)
+	result.TokensByDay = make(map[string]int64)
+	result.TokensByHour = make(map[string]int64)
+
+	apiSnapshot := APISnapshot{
+		TotalRequests: stats.TotalRequests,
+		TotalTokens:   stats.TotalTokens,
+		Models:        make(map[string]ModelSnapshot, len(stats.Models)),
+	}
+
+	for modelName, modelStatsValue := range stats.Models {
+		if modelStatsValue == nil {
+			continue
+		}
+		requestDetails := make([]RequestDetail, len(modelStatsValue.Details))
+		copy(requestDetails, modelStatsValue.Details)
+		apiSnapshot.Models[modelName] = ModelSnapshot{
+			TotalRequests: modelStatsValue.TotalRequests,
+			TotalTokens:   modelStatsValue.TotalTokens,
+			Details:       requestDetails,
+		}
+		for _, detail := range modelStatsValue.Details {
+			result.TotalRequests++
+			if detail.Failed {
+				result.FailureCount++
+			} else {
+				result.SuccessCount++
+			}
+			result.TotalTokens += detail.Tokens.TotalTokens
+
+			dayKey := detail.Timestamp.Format("2006-01-02")
+			hourKey := formatHour(detail.Timestamp.Hour())
+			result.RequestsByDay[dayKey]++
+			result.RequestsByHour[hourKey]++
+			result.TokensByDay[dayKey] += detail.Tokens.TotalTokens
+			result.TokensByHour[hourKey] += detail.Tokens.TotalTokens
+		}
+	}
+
+	result.APIs[apiKey] = apiSnapshot
+	return result
+}
+
 type MergeResult struct {
 	Added   int64 `json:"added"`
 	Skipped int64 `json:"skipped"`
@@ -298,7 +365,6 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	seen := make(map[string]struct{})
 	for apiName, stats := range s.apis {
@@ -352,6 +418,8 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 		}
 	}
 
+	s.mu.Unlock()
+	s.requestPersist()
 	return result
 }
 

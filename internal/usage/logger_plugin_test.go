@@ -94,3 +94,67 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 		t.Fatalf("details len = %d, want 1", len(details))
 	}
 }
+
+func TestRequestStatisticsSnapshotForAPI(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "team-a",
+		Model:       "gpt-5.4",
+		RequestedAt: time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
+		Detail: coreusage.Detail{
+			InputTokens:  10,
+			OutputTokens: 20,
+			TotalTokens:  30,
+		},
+	})
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "team-a",
+		Model:       "gpt-5.4",
+		RequestedAt: time.Date(2026, 3, 20, 13, 0, 0, 0, time.UTC),
+		Failed:      true,
+		Detail: coreusage.Detail{
+			InputTokens:  5,
+			OutputTokens: 0,
+			TotalTokens:  5,
+		},
+	})
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "team-b",
+		Model:       "gpt-5.4-mini",
+		RequestedAt: time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC),
+		Detail: coreusage.Detail{
+			InputTokens:  100,
+			OutputTokens: 50,
+			TotalTokens:  150,
+		},
+	})
+
+	snapshot := stats.SnapshotForAPI("team-a")
+	if snapshot.TotalRequests != 2 {
+		t.Fatalf("total_requests = %d, want 2", snapshot.TotalRequests)
+	}
+	if snapshot.SuccessCount != 1 {
+		t.Fatalf("success_count = %d, want 1", snapshot.SuccessCount)
+	}
+	if snapshot.FailureCount != 1 {
+		t.Fatalf("failure_count = %d, want 1", snapshot.FailureCount)
+	}
+	if snapshot.TotalTokens != 35 {
+		t.Fatalf("total_tokens = %d, want 35", snapshot.TotalTokens)
+	}
+	if len(snapshot.APIs) != 1 {
+		t.Fatalf("apis len = %d, want 1", len(snapshot.APIs))
+	}
+	if _, ok := snapshot.APIs["team-b"]; ok {
+		t.Fatal("unexpected team-b stats in filtered snapshot")
+	}
+	if got := snapshot.RequestsByDay["2026-03-20"]; got != 2 {
+		t.Fatalf("requests_by_day[2026-03-20] = %d, want 2", got)
+	}
+	if got := snapshot.TokensByHour["12"]; got != 30 {
+		t.Fatalf("tokens_by_hour[12] = %d, want 30", got)
+	}
+	if got := snapshot.TokensByHour["13"]; got != 5 {
+		t.Fatalf("tokens_by_hour[13] = %d, want 5", got)
+	}
+}

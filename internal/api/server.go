@@ -42,6 +42,8 @@ import (
 
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
 
+var defaultPublicEndpointProtector = middleware.NewPublicEndpointProtector()
+
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
 	engineConfigurator   func(*gin.Engine)
@@ -323,11 +325,15 @@ func (s *Server) setupRoutes() {
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
+	authMiddleware := AuthMiddleware(s.accessManager)
+	publicProtectionMiddleware := middleware.PublicEndpointProtectionMiddleware(defaultPublicEndpointProtector)
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(authMiddleware, publicProtectionMiddleware)
 	{
+		v1.GET("/api/oauth-quota", s.mgmt.GetAuthenticatedOAuthQuota)
+		v1.POST("/api/usage", s.mgmt.GetAuthenticatedUsage)
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		v1.POST("/completions", openaiHandlers.Completions)
@@ -340,11 +346,17 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(authMiddleware, publicProtectionMiddleware)
 	{
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
 		v1beta.GET("/models/*action", geminiHandlers.GeminiGetHandler)
+	}
+
+	userAPI := s.engine.Group("/api")
+	userAPI.Use(authMiddleware, publicProtectionMiddleware)
+	{
+		userAPI.POST("/usage", s.mgmt.GetAuthenticatedUsage)
 	}
 
 	// Root endpoint

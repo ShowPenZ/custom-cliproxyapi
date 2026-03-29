@@ -341,15 +341,17 @@ func (w *ResponseWriterWrapper) extractAPIRequest(c *gin.Context) []byte {
 }
 
 func (w *ResponseWriterWrapper) extractAPIResponse(c *gin.Context) []byte {
+	payloads := make([][]byte, 0, 2)
+	if trace := logging.GetAuthRouteResponse(c); len(trace) > 0 {
+		payloads = append(payloads, trace)
+	}
 	apiResponse, isExist := c.Get("API_RESPONSE")
-	if !isExist {
-		return nil
+	if isExist {
+		if data, ok := apiResponse.([]byte); ok && len(data) > 0 {
+			payloads = append(payloads, data)
+		}
 	}
-	data, ok := apiResponse.([]byte)
-	if !ok || len(data) == 0 {
-		return nil
-	}
-	return data
+	return joinLogPayloads(payloads...)
 }
 
 func (w *ResponseWriterWrapper) extractAPIResponseTimestamp(c *gin.Context) time.Time {
@@ -382,6 +384,25 @@ func (w *ResponseWriterWrapper) extractRequestBody(c *gin.Context) []byte {
 		return w.requestInfo.Body
 	}
 	return nil
+}
+
+func joinLogPayloads(payloads ...[]byte) []byte {
+	var builder bytes.Buffer
+	for _, payload := range payloads {
+		trimmed := bytes.TrimSpace(payload)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.Write(trimmed)
+	}
+	if builder.Len() == 0 {
+		return nil
+	}
+	builder.WriteByte('\n')
+	return builder.Bytes()
 }
 
 func (w *ResponseWriterWrapper) logRequest(requestBody []byte, statusCode int, headers map[string][]string, body []byte, apiRequestBody, apiResponseBody []byte, apiResponseTimestamp time.Time, apiResponseErrors []*interfaces.ErrorMessage, forceLog bool) error {
