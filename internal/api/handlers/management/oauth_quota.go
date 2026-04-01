@@ -26,6 +26,8 @@ const (
 	oauthQuotaProbeRefreshTimeout = 45 * time.Second
 )
 
+var oauthQuotaUTCPlus8 = time.FixedZone("UTC+8", 8*60*60)
+
 type oauthQuotaResponse struct {
 	Error       bool                     `json:"error"`
 	User        string                   `json:"user,omitempty"`
@@ -200,13 +202,13 @@ func (h *Handler) applyOAuthProbe(ctx context.Context, auth *coreauth.Auth, row 
 }
 
 type oauthProbeResult struct {
-	statusCode         int
-	errText            string
-	retryRefresh       bool
-	planType           string
-	primaryUsedPercent *int
-	primaryResetAt     *time.Time
-	primaryResetAfter  *int
+	statusCode           int
+	errText              string
+	retryRefresh         bool
+	planType             string
+	primaryUsedPercent   *int
+	primaryResetAt       *time.Time
+	primaryResetAfter    *int
 	secondaryUsedPercent *int
 	secondaryResetAt     *time.Time
 	secondaryResetAfter  *int
@@ -255,10 +257,10 @@ func (h *Handler) doOAuthProbe(ctx context.Context, auth *coreauth.Auth, model s
 	}
 	result.primaryUsedPercent = parseHeaderInt(resp.Header, "X-Codex-Primary-Used-Percent")
 	result.primaryResetAfter = parseHeaderInt(resp.Header, "X-Codex-Primary-Reset-After-Seconds")
-	result.primaryResetAt = parseHeaderEpoch(resp.Header, "X-Codex-Primary-Reset-At")
+	result.primaryResetAt = parseHeaderEpochInLocation(resp.Header, "X-Codex-Primary-Reset-At", oauthQuotaUTCPlus8)
 	result.secondaryUsedPercent = parseHeaderInt(resp.Header, "X-Codex-Secondary-Used-Percent")
 	result.secondaryResetAfter = parseHeaderInt(resp.Header, "X-Codex-Secondary-Reset-After-Seconds")
-	result.secondaryResetAt = parseHeaderEpoch(resp.Header, "X-Codex-Secondary-Reset-At")
+	result.secondaryResetAt = parseHeaderEpochInLocation(resp.Header, "X-Codex-Secondary-Reset-At", oauthQuotaUTCPlus8)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		result.errText = http.StatusText(resp.StatusCode)
 	}
@@ -340,6 +342,10 @@ func parseHeaderInt(header http.Header, key string) *int {
 }
 
 func parseHeaderEpoch(header http.Header, key string) *time.Time {
+	return parseHeaderEpochInLocation(header, key, time.UTC)
+}
+
+func parseHeaderEpochInLocation(header http.Header, key string, loc *time.Location) *time.Time {
 	raw := strings.TrimSpace(header.Get(key))
 	if raw == "" {
 		return nil
@@ -348,7 +354,10 @@ func parseHeaderEpoch(header http.Header, key string) *time.Time {
 	if err != nil || seconds <= 0 {
 		return nil
 	}
-	ts := time.Unix(seconds, 0).UTC()
+	if loc == nil {
+		loc = time.UTC
+	}
+	ts := time.Unix(seconds, 0).In(loc)
 	return &ts
 }
 
@@ -364,4 +373,3 @@ func queryTruthy(value string) bool {
 func intPtr(value int) *int {
 	return &value
 }
-

@@ -7,7 +7,7 @@ import secrets
 import subprocess
 import sys
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 
@@ -44,6 +44,7 @@ OAUTH_QUOTA_HEADER_FIELDS = {
     "x-codex-secondary-reset-at": "secondary_reset_at_epoch",
     "x-codex-secondary-used-percent": "secondary_used_percent",
 }
+UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 
 
 def fail(message: str, code: int = 1) -> None:
@@ -95,6 +96,10 @@ def normalise_iso(value: str) -> str:
 
 
 def normalise_epoch_seconds(value: Any) -> str:
+    return normalise_epoch_seconds_in_timezone(value, UTC)
+
+
+def normalise_epoch_seconds_in_timezone(value: Any, tz: timezone) -> str:
     text = str(value).strip()
     if not text:
         return "-"
@@ -102,7 +107,7 @@ def normalise_epoch_seconds(value: Any) -> str:
         seconds = int(float(text))
     except ValueError:
         return text
-    return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(seconds, tz=tz).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def int_from_text(value: Any) -> int | None:
@@ -244,9 +249,9 @@ def parse_oauth_quota_log(path: str) -> dict[str, Any] | None:
         "secondary_reset_after_seconds": headers.get("secondary_reset_after_seconds", "-").strip() or "-",
     }
     snapshot["primary_remaining_percent"] = remaining_percent(snapshot["primary_used_percent"])
-    snapshot["primary_reset_at"] = normalise_epoch_seconds(snapshot["primary_reset_at_epoch"])
+    snapshot["primary_reset_at"] = normalise_epoch_seconds_in_timezone(snapshot["primary_reset_at_epoch"], UTC_PLUS_8)
     snapshot["secondary_remaining_percent"] = remaining_percent(snapshot["secondary_used_percent"])
-    snapshot["secondary_reset_at"] = normalise_epoch_seconds(snapshot["secondary_reset_at_epoch"])
+    snapshot["secondary_reset_at"] = normalise_epoch_seconds_in_timezone(snapshot["secondary_reset_at_epoch"], UTC_PLUS_8)
     return snapshot
 
 
@@ -395,12 +400,12 @@ def parse_oauth_probe_output(output: str, model: str) -> dict[str, Any]:
         snapshot["primary_used_percent"] = headers.get("primary_used_percent", "-").strip() or "-"
         snapshot["primary_remaining_percent"] = remaining_percent(snapshot["primary_used_percent"])
         snapshot["primary_reset_at_epoch"] = headers.get("primary_reset_at_epoch", "-").strip() or "-"
-        snapshot["primary_reset_at"] = normalise_epoch_seconds(snapshot["primary_reset_at_epoch"])
+        snapshot["primary_reset_at"] = normalise_epoch_seconds_in_timezone(snapshot["primary_reset_at_epoch"], UTC_PLUS_8)
         snapshot["primary_reset_after_seconds"] = headers.get("primary_reset_after_seconds", "-").strip() or "-"
         snapshot["secondary_used_percent"] = headers.get("secondary_used_percent", "-").strip() or "-"
         snapshot["secondary_remaining_percent"] = remaining_percent(snapshot["secondary_used_percent"])
         snapshot["secondary_reset_at_epoch"] = headers.get("secondary_reset_at_epoch", "-").strip() or "-"
-        snapshot["secondary_reset_at"] = normalise_epoch_seconds(snapshot["secondary_reset_at_epoch"])
+        snapshot["secondary_reset_at"] = normalise_epoch_seconds_in_timezone(snapshot["secondary_reset_at_epoch"], UTC_PLUS_8)
         snapshot["secondary_reset_after_seconds"] = headers.get("secondary_reset_after_seconds", "-").strip() or "-"
         snapshot["probe_error"] = "-"
     return snapshot
