@@ -335,6 +335,7 @@ func (s *Server) setupRoutes() {
 		claudeModelsHandler := s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers)
 		v1.GET("/api/oauth-quota", s.mgmt.GetAuthenticatedOAuthQuota)
 		v1.GET("/api/antigravity-quota", s.mgmt.GetAuthenticatedAntigravityQuota)
+		v1.GET("/api/codex-subscription-status", s.mgmt.GetAuthenticatedCodexSubscriptionStatus)
 		v1.POST("/api/usage", s.mgmt.GetAuthenticatedUsage)
 		v1.GET("/models", claudeModelsHandler)
 		// Claude CLI expects to append its own "/v1/..." paths to the configured base URL.

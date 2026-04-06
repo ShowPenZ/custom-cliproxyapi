@@ -500,6 +500,9 @@ func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
 	if v := claims.CodexAuthInfo.ChatgptSubscriptionActiveUntil; v != nil {
 		result["chatgpt_subscription_active_until"] = v
 	}
+	if !claims.CodexAuthInfo.ChatgptSubscriptionLastChecked.IsZero() {
+		result["chatgpt_subscription_last_checked"] = claims.CodexAuthInfo.ChatgptSubscriptionLastChecked
+	}
 
 	if len(result) == 0 {
 		return nil

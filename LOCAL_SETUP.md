@@ -189,6 +189,19 @@ curl 'https://tradetd.cloud-ip.cc/v1/api/oauth-quota?probe=1' \
   -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
 ```
 
+Remote HTTPS API for Codex OAuth subscription status:
+
+```bash
+curl 'https://tradetd.cloud-ip.cc/v1/api/codex-subscription-status' \
+  -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
+```
+
+Codex subscription status notes:
+
+- This endpoint reads cached ChatGPT subscription metadata from each Codex OAuth account's `id_token`.
+- `subscription_active_until` is the cached Plus renewal/expiry timestamp carried in the token, not a live billing API lookup.
+- `token_expires_at` is only the current OAuth token expiry time and is not the same as the ChatGPT Plus renewal date.
+
 Remote HTTPS API for live Antigravity quota:
 
 ```bash

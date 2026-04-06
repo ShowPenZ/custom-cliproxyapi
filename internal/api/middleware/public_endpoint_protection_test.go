@@ -63,3 +63,27 @@ func TestPublicEndpointProtectorBypassesLoopback(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicEndpointProtectorLimitsCodexSubscriptionStatusByAPIKey(t *testing.T) {
+	current := time.Unix(1_700_000_000, 0)
+	protector := newPublicEndpointProtector(func() time.Time { return current })
+	req := httptest.NewRequest(http.MethodGet, "/v1/api/codex-subscription-status", nil)
+
+	for i := 0; i < 12; i++ {
+		decision := protector.Evaluate(req, "sk-test", "203.0.113.10")
+		if !decision.Allowed {
+			t.Fatalf("request %d unexpectedly denied: %#v", i+1, decision)
+		}
+	}
+
+	decision := protector.Evaluate(req, "sk-test", "203.0.113.10")
+	if decision.Allowed {
+		t.Fatal("thirteenth request should be rate-limited")
+	}
+	if decision.PolicyName != "codex-subscription-status-read" {
+		t.Fatalf("policy = %q, want %q", decision.PolicyName, "codex-subscription-status-read")
+	}
+	if decision.Scope != "api_key" {
+		t.Fatalf("scope = %q, want %q", decision.Scope, "api_key")
+	}
+}

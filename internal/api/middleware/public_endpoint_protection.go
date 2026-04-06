@@ -224,6 +224,13 @@ func classifyPublicEndpointPolicy(req *http.Request) (PublicEndpointPolicy, bool
 			KeyLimit: 8,
 			IPLimit:  16,
 		}, true
+	case path == "/v1/api/codex-subscription-status":
+		return PublicEndpointPolicy{
+			Name:     "codex-subscription-status-read",
+			Window:   time.Minute,
+			KeyLimit: 12,
+			IPLimit:  24,
+		}, true
 	case path == "/v1/api/usage" || path == "/api/usage":
 		return PublicEndpointPolicy{
 			Name:     "usage-read",
