@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	gin "github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -114,6 +117,72 @@ func TestAmpProviderModelRoutes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClaudeCompatibilityRoutes(t *testing.T) {
+	server := newTestServer(t)
+
+	modelID := "claude-compat-route-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	registry.GetGlobalRegistry().RegisterClient("test-claude-compat-"+modelID, "antigravity", []*registry.ModelInfo{{
+		ID:          modelID,
+		OwnedBy:     "antigravity",
+		Type:        "model",
+		DisplayName: "Claude Compat Route",
+	}})
+
+	t.Run("models aliases return claude list shape", func(t *testing.T) {
+		paths := []string{
+			"/v1/models",
+			"/v1/v1/models",
+			"/v1/models/claude",
+			"/v1/v1/models/claude",
+			"/v1/messages/v1/models",
+			"/v1/messages/v1/models/claude",
+		}
+
+		for _, path := range paths {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer test-key")
+			req.Header.Set("User-Agent", "claude-cli/2.1.92 (external, cli)")
+
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("unexpected status code for %s: got %d want %d; body=%s", path, rr.Code, http.StatusOK, rr.Body.String())
+			}
+			body := rr.Body.String()
+			if !strings.Contains(body, `"object":"list"`) {
+				t.Fatalf("response body for %s missing list object: %s", path, body)
+			}
+			if !strings.Contains(body, modelID) {
+				t.Fatalf("response body for %s missing model id %q: %s", path, modelID, body)
+			}
+		}
+	})
+
+	t.Run("messages aliases are routed instead of 404", func(t *testing.T) {
+		paths := []string{
+			"/v1/messages",
+			"/v1/v1/messages",
+			"/v1/messages/v1/messages",
+		}
+
+		body := []byte(`{"model":"` + modelID + `","messages":[{"role":"user","content":"ping"}],"stream":false}`)
+		for _, path := range paths {
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-key")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "claude-cli/2.1.92 (external, cli)")
+
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code == http.StatusNotFound {
+				t.Fatalf("route %s returned 404; body=%s", path, rr.Body.String())
+			}
+		}
+	})
 }
 
 func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {

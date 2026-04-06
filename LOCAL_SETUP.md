@@ -165,6 +165,25 @@ curl 'https://tradetd.cloud-ip.cc/v1/api/oauth-quota?probe=1' \
   -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
 ```
 
+Remote HTTPS API for live Antigravity quota:
+
+```bash
+curl 'https://tradetd.cloud-ip.cc/v1/api/antigravity-quota' \
+  -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
+
+curl 'https://tradetd.cloud-ip.cc/v1/api/antigravity-quota?model=gemini-3-flash' \
+  -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
+
+curl 'https://tradetd.cloud-ip.cc/v1/api/antigravity-quota?prefix=ag2&details=1' \
+  -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
+```
+
+Antigravity quota notes:
+
+- This endpoint queries Antigravity live and returns per-model remaining percentage from `quotaInfo.remainingFraction`.
+- `model=...` highlights one specific model in each account as `matched_model`.
+- `details=1` returns the full per-model quota list for each account.
+
 State meanings:
 
 - `online`: currently available for routing

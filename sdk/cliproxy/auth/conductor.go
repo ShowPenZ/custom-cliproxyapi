@@ -1770,10 +1770,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						suspendReason = "unauthorized"
 						shouldSuspendModel = true
 					case 402, 403:
-						next := now.Add(30 * time.Minute)
-						state.NextRetryAfter = next
-						suspendReason = "payment_required"
-						shouldSuspendModel = true
+						if isValidationRequiredError(result.Error) {
+							state.StatusMessage = "validation_required"
+							state.NextRetryAfter = time.Time{}
+						} else {
+							next := now.Add(30 * time.Minute)
+							state.NextRetryAfter = next
+							suspendReason = "payment_required"
+							shouldSuspendModel = true
+						}
 					case 404:
 						next := now.Add(12 * time.Hour)
 						state.NextRetryAfter = next
@@ -1953,6 +1958,21 @@ func hasModelError(auth *Auth, now time.Time) bool {
 	return false
 }
 
+func isValidationRequiredError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	if err.HTTPStatus != http.StatusForbidden && err.HTTPStatus != http.StatusPaymentRequired {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Message))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "validation_required") ||
+		strings.Contains(msg, "verify your account to continue")
+}
+
 func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	if auth == nil {
 		return
@@ -2109,8 +2129,13 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.StatusMessage = "unauthorized"
 		auth.NextRetryAfter = now.Add(30 * time.Minute)
 	case 402, 403:
-		auth.StatusMessage = "payment_required"
-		auth.NextRetryAfter = now.Add(30 * time.Minute)
+		if isValidationRequiredError(resultErr) {
+			auth.StatusMessage = "validation_required"
+			auth.NextRetryAfter = time.Time{}
+		} else {
+			auth.StatusMessage = "payment_required"
+			auth.NextRetryAfter = now.Add(30 * time.Minute)
+		}
 	case 404:
 		auth.StatusMessage = "not_found"
 		auth.NextRetryAfter = now.Add(12 * time.Hour)

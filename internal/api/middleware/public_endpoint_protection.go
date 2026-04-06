@@ -217,6 +217,13 @@ func classifyPublicEndpointPolicy(req *http.Request) (PublicEndpointPolicy, bool
 			KeyLimit: 12,
 			IPLimit:  24,
 		}, true
+	case path == "/v1/api/antigravity-quota":
+		return PublicEndpointPolicy{
+			Name:     "antigravity-quota-read",
+			Window:   time.Minute,
+			KeyLimit: 8,
+			IPLimit:  16,
+		}, true
 	case path == "/v1/api/usage" || path == "/api/usage":
 		return PublicEndpointPolicy{
 			Name:     "usage-read",

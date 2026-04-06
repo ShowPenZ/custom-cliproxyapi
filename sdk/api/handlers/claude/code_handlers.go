@@ -142,6 +142,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
+		"object":   "list",
 		"data":     models,
 		"has_more": false,
 		"first_id": firstID,
