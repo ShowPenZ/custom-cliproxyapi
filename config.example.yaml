@@ -91,6 +91,9 @@ quota-exceeded:
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
+  # Optional per-provider override. Useful when one provider should rotate even if the global strategy is fill-first.
+  # provider-strategy:
+  #   antigravity: "round-robin"
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: false

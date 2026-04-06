@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
@@ -82,7 +83,7 @@ func TestSchedulerPick_RoundRobinHighestPriority(t *testing.T) {
 
 	want := []string{"high-a", "high-b", "high-a"}
 	for index, wantID := range want {
-		got, errPick := scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+		got, errPick := scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil, scheduler.strategy)
 		if errPick != nil {
 			t.Fatalf("pickSingle() #%d error = %v", index, errPick)
 		}
@@ -106,7 +107,7 @@ func TestSchedulerPick_FillFirstSticksToFirstReady(t *testing.T) {
 	)
 
 	for index := 0; index < 3; index++ {
-		got, errPick := scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+		got, errPick := scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil, scheduler.strategy)
 		if errPick != nil {
 			t.Fatalf("pickSingle() #%d error = %v", index, errPick)
 		}
@@ -116,6 +117,38 @@ func TestSchedulerPick_FillFirstSticksToFirstReady(t *testing.T) {
 		if got.ID != "a" {
 			t.Fatalf("pickSingle() #%d auth.ID = %q, want %q", index, got.ID, "a")
 		}
+	}
+}
+
+func TestSchedulerPick_ProviderOverrideUsesRoundRobin(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			Strategy:         "fill-first",
+			ProviderStrategy: map[string]string{"antigravity": "round-robin"},
+		},
+	})
+	manager.scheduler.rebuild([]*Auth{
+		{ID: "anti-b", Provider: "antigravity"},
+		{ID: "anti-a", Provider: "antigravity"},
+	})
+
+	got1, errPick := manager.scheduler.pickSingle(context.Background(), "antigravity", "", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("antigravity"))
+	if errPick != nil {
+		t.Fatalf("pickSingle() #1 error = %v", errPick)
+	}
+	if got1 == nil || got1.ID != "anti-a" {
+		t.Fatalf("pickSingle() #1 auth = %v, want anti-a", got1)
+	}
+
+	got2, errPick := manager.scheduler.pickSingle(context.Background(), "antigravity", "", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("antigravity"))
+	if errPick != nil {
+		t.Fatalf("pickSingle() #2 error = %v", errPick)
+	}
+	if got2 == nil || got2.ID != "anti-b" {
+		t.Fatalf("pickSingle() #2 auth = %v, want anti-b", got2)
 	}
 }
 
@@ -139,7 +172,7 @@ func TestSchedulerPick_PromotesExpiredCooldownBeforePick(t *testing.T) {
 		},
 	)
 
-	got, errPick := scheduler.pickSingle(context.Background(), "gemini", model, cliproxyexecutor.Options{}, nil)
+	got, errPick := scheduler.pickSingle(context.Background(), "gemini", model, cliproxyexecutor.Options{}, nil, scheduler.strategy)
 	if errPick != nil {
 		t.Fatalf("pickSingle() error = %v", errPick)
 	}
@@ -166,7 +199,7 @@ func TestSchedulerPick_GeminiVirtualParentUsesTwoLevelRotation(t *testing.T) {
 	wantParents := []string{"cred-a", "cred-b", "cred-a", "cred-b"}
 	wantIDs := []string{"cred-a::proj-1", "cred-b::proj-1", "cred-a::proj-2", "cred-b::proj-2"}
 	for index := range wantIDs {
-		got, errPick := scheduler.pickSingle(context.Background(), "gemini-cli", "gemini-2.5-pro", cliproxyexecutor.Options{}, nil)
+		got, errPick := scheduler.pickSingle(context.Background(), "gemini-cli", "gemini-2.5-pro", cliproxyexecutor.Options{}, nil, scheduler.strategy)
 		if errPick != nil {
 			t.Fatalf("pickSingle() #%d error = %v", index, errPick)
 		}
@@ -195,7 +228,7 @@ func TestSchedulerPick_CodexWebsocketPrefersWebsocketEnabledSubset(t *testing.T)
 	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
 	want := []string{"codex-ws-a", "codex-ws-b", "codex-ws-a"}
 	for index, wantID := range want {
-		got, errPick := scheduler.pickSingle(ctx, "codex", "", cliproxyexecutor.Options{}, nil)
+		got, errPick := scheduler.pickSingle(ctx, "codex", "", cliproxyexecutor.Options{}, nil, scheduler.strategy)
 		if errPick != nil {
 			t.Fatalf("pickSingle() #%d error = %v", index, errPick)
 		}
@@ -307,6 +340,47 @@ func TestManager_PickNextMixed_UsesProviderRotationBeforeCredentialRotation(t *t
 	}
 }
 
+func TestManager_PickNextMixed_SingleProviderUsesProviderOverride(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			Strategy:         "fill-first",
+			ProviderStrategy: map[string]string{"antigravity": "round-robin"},
+		},
+	})
+	manager.executors["antigravity"] = schedulerTestExecutor{}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "anti-b", Provider: "antigravity"}); errRegister != nil {
+		t.Fatalf("Register(anti-b) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "anti-a", Provider: "antigravity"}); errRegister != nil {
+		t.Fatalf("Register(anti-a) error = %v", errRegister)
+	}
+
+	got1, _, provider1, errPick := manager.pickNextMixed(context.Background(), []string{"antigravity"}, "", cliproxyexecutor.Options{}, map[string]struct{}{})
+	if errPick != nil {
+		t.Fatalf("pickNextMixed() #1 error = %v", errPick)
+	}
+	if provider1 != "antigravity" {
+		t.Fatalf("pickNextMixed() #1 provider = %q, want antigravity", provider1)
+	}
+	if got1 == nil || got1.ID != "anti-a" {
+		t.Fatalf("pickNextMixed() #1 auth = %v, want anti-a", got1)
+	}
+
+	got2, _, provider2, errPick := manager.pickNextMixed(context.Background(), []string{"antigravity"}, "", cliproxyexecutor.Options{}, map[string]struct{}{})
+	if errPick != nil {
+		t.Fatalf("pickNextMixed() #2 error = %v", errPick)
+	}
+	if provider2 != "antigravity" {
+		t.Fatalf("pickNextMixed() #2 provider = %q, want antigravity", provider2)
+	}
+	if got2 == nil || got2.ID != "anti-b" {
+		t.Fatalf("pickNextMixed() #2 auth = %v, want anti-b", got2)
+	}
+}
+
 func TestManagerCustomSelector_FallsBackToLegacyPath(t *testing.T) {
 	t.Parallel()
 
@@ -362,7 +436,7 @@ func TestManager_SchedulerTracksRegisterAndUpdate(t *testing.T) {
 		t.Fatalf("Register(auth-a) error = %v", errRegister)
 	}
 
-	got, errPick := manager.scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	got, errPick := manager.scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("gemini"))
 	if errPick != nil {
 		t.Fatalf("scheduler.pickSingle() error = %v", errPick)
 	}
@@ -374,7 +448,7 @@ func TestManager_SchedulerTracksRegisterAndUpdate(t *testing.T) {
 		t.Fatalf("Update(auth-a) error = %v", errUpdate)
 	}
 
-	got, errPick = manager.scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	got, errPick = manager.scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("gemini"))
 	if errPick != nil {
 		t.Fatalf("scheduler.pickSingle() after update error = %v", errPick)
 	}
@@ -471,7 +545,7 @@ func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 		Error:    &Error{HTTPStatus: 429, Message: "quota"},
 	})
 
-	got, errPick := manager.scheduler.pickSingle(context.Background(), "gemini", "test-model", cliproxyexecutor.Options{}, nil)
+	got, errPick := manager.scheduler.pickSingle(context.Background(), "gemini", "test-model", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("gemini"))
 	if errPick != nil {
 		t.Fatalf("scheduler.pickSingle() after cooldown error = %v", errPick)
 	}
@@ -488,7 +562,7 @@ func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 
 	seen := make(map[string]struct{}, 2)
 	for index := 0; index < 2; index++ {
-		got, errPick = manager.scheduler.pickSingle(context.Background(), "gemini", "test-model", cliproxyexecutor.Options{}, nil)
+		got, errPick = manager.scheduler.pickSingle(context.Background(), "gemini", "test-model", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("gemini"))
 		if errPick != nil {
 			t.Fatalf("scheduler.pickSingle() after recovery #%d error = %v", index, errPick)
 		}

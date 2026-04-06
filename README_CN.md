@@ -67,7 +67,7 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 - 可通过 `GET /v0/management/runtime-auths` 查看上游账号的运行态状态
 - 返回结果会包含冷却恢复时间与重试时间，便于运维判断哪些上游在线、哪些仍在冷却
-- 如需查看 HTTPS 反代、本地同事 API Key 分发、使用量统计与 `cliproxy-upstream-status` 的落地示例，请参见 [LOCAL_SETUP.md](LOCAL_SETUP.md)
+- 如需查看 HTTPS 反代、本地同事 API Key 分发、使用量统计、Antigravity 本地运维命令与公开 quota 查询示例，请参见 [LOCAL_SETUP.md](LOCAL_SETUP.md)
 
 ## Amp CLI 支持
 

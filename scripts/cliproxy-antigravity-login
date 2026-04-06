@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="${CLIPROXY_SERVICE_NAME:-cli-proxy-api}"
+CONFIG_PATH="${CLIPROXY_CONFIG_PATH:-/CLIProxyAPI/config.yaml}"
+
+exec docker compose exec "${SERVICE_NAME}" ./CLIProxyAPI \
+  -config "${CONFIG_PATH}" \
+  -antigravity-login \
+  -no-browser \
+  "$@"

@@ -198,6 +198,10 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// ProviderStrategy overrides the global routing strategy for specific providers.
+	// Example: antigravity: round-robin
+	ProviderStrategy map[string]string `yaml:"provider-strategy,omitempty" json:"provider-strategy,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

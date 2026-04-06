@@ -79,7 +79,7 @@ func TestManager_RefreshSchedulerEntry_RebuildsSupportedModelSetAfterModelRegist
 
 			registerSchedulerModels(t, "gemini", "scheduler-refresh-model", auth.ID)
 
-			got, errPick := manager.scheduler.pickSingle(ctx, "gemini", "scheduler-refresh-model", cliproxyexecutor.Options{}, nil)
+			got, errPick := manager.scheduler.pickSingle(ctx, "gemini", "scheduler-refresh-model", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("gemini"))
 			var authErr *Error
 			if !errors.As(errPick, &authErr) || authErr == nil {
 				t.Fatalf("pickSingle() before refresh error = %v, want auth_not_found", errPick)
@@ -93,7 +93,7 @@ func TestManager_RefreshSchedulerEntry_RebuildsSupportedModelSetAfterModelRegist
 
 			manager.RefreshSchedulerEntry(auth.ID)
 
-			got, errPick = manager.scheduler.pickSingle(ctx, "gemini", "scheduler-refresh-model", cliproxyexecutor.Options{}, nil)
+			got, errPick = manager.scheduler.pickSingle(ctx, "gemini", "scheduler-refresh-model", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("gemini"))
 			if errPick != nil {
 				t.Fatalf("pickSingle() after refresh error = %v", errPick)
 			}
@@ -141,7 +141,7 @@ func TestManager_PickNext_RebuildsSchedulerAfterModelCooldownError(t *testing.T)
 		reg.UnregisterClient(newAuth.ID)
 	})
 
-	got, errPick := manager.scheduler.pickSingle(ctx, "gemini", "scheduler-cooldown-rebuild-model", cliproxyexecutor.Options{}, nil)
+	got, errPick := manager.scheduler.pickSingle(ctx, "gemini", "scheduler-cooldown-rebuild-model", cliproxyexecutor.Options{}, nil, manager.routingStrategyForProvider("gemini"))
 	var cooldownErr *modelCooldownError
 	if !errors.As(errPick, &cooldownErr) {
 		t.Fatalf("pickSingle() before sync error = %v, want modelCooldownError", errPick)

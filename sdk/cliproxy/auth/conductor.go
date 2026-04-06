@@ -2282,6 +2282,33 @@ func shouldRetrySchedulerPick(err error) bool {
 	return authErr.Code == "auth_not_found" || authErr.Code == "auth_unavailable"
 }
 
+func normalizeBuiltInRoutingStrategy(strategy string) schedulerStrategy {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "fill-first", "fillfirst", "ff":
+		return schedulerStrategyFillFirst
+	default:
+		return schedulerStrategyRoundRobin
+	}
+}
+
+func (m *Manager) routingStrategyForProvider(provider string) schedulerStrategy {
+	if m == nil {
+		return schedulerStrategyRoundRobin
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg != nil && cfg.Routing.ProviderStrategy != nil {
+		if override, ok := cfg.Routing.ProviderStrategy[strings.ToLower(strings.TrimSpace(provider))]; ok {
+			return normalizeBuiltInRoutingStrategy(override)
+		}
+		for key, override := range cfg.Routing.ProviderStrategy {
+			if strings.EqualFold(strings.TrimSpace(key), provider) {
+				return normalizeBuiltInRoutingStrategy(override)
+			}
+		}
+	}
+	return selectorStrategy(m.selector)
+}
+
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 
@@ -2350,10 +2377,11 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if !okExecutor {
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
-	selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried)
+	strategy := m.routingStrategyForProvider(provider)
+	selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried, strategy)
 	if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
 		m.syncScheduler()
-		selected, errPick = m.scheduler.pickSingle(ctx, provider, model, opts, tried)
+		selected, errPick = m.scheduler.pickSingle(ctx, provider, model, opts, tried, strategy)
 	}
 	if errPick != nil {
 		return nil, nil, errPick
@@ -2479,6 +2507,35 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 	if len(eligibleProviders) == 0 {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+	}
+	if len(eligibleProviders) == 1 {
+		providerKey := eligibleProviders[0]
+		executor, okExecutor := m.Executor(providerKey)
+		if !okExecutor {
+			return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
+		}
+		strategy := m.routingStrategyForProvider(providerKey)
+		selected, errPick := m.scheduler.pickSingle(ctx, providerKey, model, opts, tried, strategy)
+		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
+			m.syncScheduler()
+			selected, errPick = m.scheduler.pickSingle(ctx, providerKey, model, opts, tried, strategy)
+		}
+		if errPick != nil {
+			return nil, nil, "", errPick
+		}
+		if selected == nil {
+			return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+		}
+		authCopy := selected.Clone()
+		if !selected.indexAssigned {
+			m.mu.Lock()
+			if current := m.auths[authCopy.ID]; current != nil && !current.indexAssigned {
+				current.EnsureIndex()
+				authCopy = current.Clone()
+			}
+			m.mu.Unlock()
+		}
+		return authCopy, executor, providerKey, nil
 	}
 
 	selected, providerKey, errPick := m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)

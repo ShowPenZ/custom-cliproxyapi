@@ -108,6 +108,7 @@ Notes:
 
 - `round-robin`: spread requests across available upstream accounts.
 - `fill-first`: use the first available account until it hits a limit, then move on to the next one. This is often better for subscription-style rolling caps.
+- This deployment keeps the global strategy on `fill-first`, but overrides `antigravity` to `round-robin` via `routing.provider-strategy.antigravity=round-robin`.
 - Automatic switching is driven by actual upstream quota/limit responses, especially HTTP `429` / `usage_limit_reached`.
 - The proxy does not currently preemptively switch based on a custom “used X tokens, then rotate” threshold.
 - Higher `priority` wins before routing strategy is applied. This deployment currently prefers OAuth (`100`) over API-key upstreams (`-100`), so normal unprefixed Codex traffic goes to OAuth first and only falls back to API-key upstreams when OAuth accounts are unavailable/cooling.
@@ -141,6 +142,29 @@ cliproxy-upstream-status codex --json
 ```
 
 The local command above reads the localhost-only Management API endpoint `GET /v0/management/runtime-auths?provider=codex`.
+
+Antigravity local operations:
+
+```bash
+./scripts/cliproxy-antigravity-login
+cliproxy-antigravity-status
+cliproxy-antigravity-status --details
+cliproxy-antigravity-enable ag2
+cliproxy-antigravity-disable ag2
+cliproxy-antigravity-test ag2 --model gemini-3-flash
+cliproxy-antigravity-quota
+cliproxy-antigravity-quota --model gemini-3-flash
+cliproxy-antigravity-quota --prefix ag2 --details
+```
+
+Antigravity command notes:
+
+- `./scripts/cliproxy-antigravity-login` runs the in-container Antigravity OAuth login flow with `-no-browser`.
+- `cliproxy-antigravity-status` lists prefix, email, runtime state, recent error type, and model count.
+- `cliproxy-antigravity-enable` / `cliproxy-antigravity-disable` toggle one Antigravity auth by prefix, email, or auth id.
+- `cliproxy-antigravity-test` sends one targeted request through a specific Antigravity prefix.
+- `cliproxy-antigravity-quota` queries Antigravity live and shows per-model remaining quota percentages.
+- `cliproxy-antigravity-quota --model ...` is the fastest way to compare one model across all Antigravity accounts.
 
 Show the latest seen upstream OAuth quota per account:
 
