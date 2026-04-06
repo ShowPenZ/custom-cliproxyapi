@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
@@ -26,11 +28,12 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// OAuth configuration constants for Gemini
 const (
-	ClientID            = "your-google-oauth-client-id"
-	ClientSecret        = "your-google-oauth-client-secret"
-	DefaultCallbackPort = 8085
+	DefaultCallbackPort      = 8085
+	ClientIDEnvVar           = "CLIPROXY_GEMINI_CLIENT_ID"
+	ClientSecretEnvVar       = "CLIPROXY_GEMINI_CLIENT_SECRET"
+	LegacyClientIDEnvVar     = "CLIPROXY_GEMINI_OAUTH_CLIENT_ID"
+	LegacyClientSecretEnvVar = "CLIPROXY_GEMINI_OAUTH_CLIENT_SECRET"
 )
 
 // OAuth scopes for Gemini authentication
@@ -38,6 +41,50 @@ var Scopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
 	"https://www.googleapis.com/auth/userinfo.email",
 	"https://www.googleapis.com/auth/userinfo.profile",
+}
+
+func OAuthClientID() string {
+	return firstNonEmptyEnv(ClientIDEnvVar, LegacyClientIDEnvVar)
+}
+
+func OAuthClientSecret() string {
+	return firstNonEmptyEnv(ClientSecretEnvVar, LegacyClientSecretEnvVar)
+}
+
+func OAuthCredentials() (string, string, error) {
+	clientID := OAuthClientID()
+	clientSecret := OAuthClientSecret()
+	if clientID == "" || clientSecret == "" {
+		return "", "", fmt.Errorf(
+			"gemini oauth credentials are not configured; set %s and %s",
+			ClientIDEnvVar,
+			ClientSecretEnvVar,
+		)
+	}
+	return clientID, clientSecret, nil
+}
+
+func NewOAuthConfig(redirectURL string) (*oauth2.Config, error) {
+	clientID, clientSecret, err := OAuthCredentials()
+	if err != nil {
+		return nil, err
+	}
+	return &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Scopes:       Scopes,
+		Endpoint:     google.Endpoint,
+	}, nil
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // GeminiAuth provides methods for handling the Gemini OAuth2 authentication flow.
@@ -89,12 +136,9 @@ func (g *GeminiAuth) GetAuthenticatedClient(ctx context.Context, ts *GeminiToken
 	var err error
 
 	// Configure the OAuth2 client.
-	conf := &oauth2.Config{
-		ClientID:     ClientID,
-		ClientSecret: ClientSecret,
-		RedirectURL:  callbackURL, // This will be used by the local server.
-		Scopes:       Scopes,
-		Endpoint:     google.Endpoint,
+	conf, err := NewOAuthConfig(callbackURL)
+	if err != nil {
+		return nil, err
 	}
 
 	var token *oauth2.Token
@@ -176,8 +220,12 @@ func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Conf
 	}
 
 	ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-	ifToken["client_id"] = ClientID
-	ifToken["client_secret"] = ClientSecret
+	clientID, clientSecret, err := OAuthCredentials()
+	if err != nil {
+		return nil, err
+	}
+	ifToken["client_id"] = clientID
+	ifToken["client_secret"] = clientSecret
 	ifToken["scopes"] = Scopes
 	ifToken["universe_domain"] = "googleapis.com"
 

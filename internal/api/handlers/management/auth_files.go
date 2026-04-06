@@ -38,7 +38,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
@@ -1438,13 +1437,12 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 
 	fmt.Println("Initializing Google authentication...")
 
-	// OAuth2 configuration using exported constants from internal/auth/gemini
-	conf := &oauth2.Config{
-		ClientID:     geminiAuth.ClientID,
-		ClientSecret: geminiAuth.ClientSecret,
-		RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2callback", geminiAuth.DefaultCallbackPort),
-		Scopes:       geminiAuth.Scopes,
-		Endpoint:     google.Endpoint,
+	conf, errConfig := geminiAuth.NewOAuthConfig(
+		fmt.Sprintf("http://localhost:%d/oauth2callback", geminiAuth.DefaultCallbackPort),
+	)
+	if errConfig != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errConfig.Error()})
+		return
 	}
 
 	// Build authorization URL and return it immediately
@@ -1566,8 +1564,8 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		}
 
 		ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-		ifToken["client_id"] = geminiAuth.ClientID
-		ifToken["client_secret"] = geminiAuth.ClientSecret
+		ifToken["client_id"] = conf.ClientID
+		ifToken["client_secret"] = conf.ClientSecret
 		ifToken["scopes"] = geminiAuth.Scopes
 		ifToken["universe_domain"] = "googleapis.com"
 
@@ -1849,6 +1847,15 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
+	if strings.TrimSpace(authURL) == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf(
+				"antigravity oauth client id is not configured; set %s",
+				antigravity.ClientIDEnvVar,
+			),
+		})
+		return
+	}
 
 	RegisterOAuthSession(state, "antigravity")
 

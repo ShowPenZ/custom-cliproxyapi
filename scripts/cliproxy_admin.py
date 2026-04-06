@@ -37,11 +37,11 @@ DEFAULT_OAUTH_PROBE_ENDPOINT = os.environ.get(
 DEFAULT_OAUTH_PROBE_TEXT = os.environ.get("CLIPROXY_OAUTH_PROBE_TEXT", "Reply with OK only.")
 ANTIGRAVITY_CLIENT_ID = os.environ.get(
     "CLIPROXY_ANTIGRAVITY_CLIENT_ID",
-    "your-antigravity-oauth-client-id",
+    "",
 )
 ANTIGRAVITY_CLIENT_SECRET = os.environ.get(
     "CLIPROXY_ANTIGRAVITY_CLIENT_SECRET",
-    "your-antigravity-oauth-client-secret",
+    "",
 )
 ANTIGRAVITY_TOKEN_ENDPOINT = os.environ.get(
     "CLIPROXY_ANTIGRAVITY_TOKEN_ENDPOINT",

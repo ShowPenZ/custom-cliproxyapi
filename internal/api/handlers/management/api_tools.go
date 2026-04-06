@@ -11,31 +11,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
+	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
-
-const (
-	geminiOAuthClientID     = "your-google-oauth-client-id"
-	geminiOAuthClientSecret = "your-google-oauth-client-secret"
-)
-
-var geminiOAuthScopes = []string{
-	"https://www.googleapis.com/auth/cloud-platform",
-	"https://www.googleapis.com/auth/userinfo.email",
-	"https://www.googleapis.com/auth/userinfo.profile",
-}
-
-const (
-	antigravityOAuthClientID     = "your-antigravity-oauth-client-id"
-	antigravityOAuthClientSecret = "your-antigravity-oauth-client-secret"
-)
 
 var antigravityOAuthTokenURL = "https://oauth2.googleapis.com/token"
 
@@ -307,11 +292,9 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 		}
 	}
 
-	conf := &oauth2.Config{
-		ClientID:     geminiOAuthClientID,
-		ClientSecret: geminiOAuthClientSecret,
-		Scopes:       geminiOAuthScopes,
-		Endpoint:     google.Endpoint,
+	conf, errTokenConfig := geminiAuth.NewOAuthConfig("")
+	if errTokenConfig != nil {
+		return "", errTokenConfig
 	}
 
 	ctxToken := ctx
@@ -362,9 +345,13 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	if tokenURL == "" {
 		tokenURL = "https://oauth2.googleapis.com/token"
 	}
+	clientID, clientSecret, errCreds := antigravity.OAuthCredentials()
+	if errCreds != nil {
+		return "", errCreds
+	}
 	form := url.Values{}
-	form.Set("client_id", antigravityOAuthClientID)
-	form.Set("client_secret", antigravityOAuthClientSecret)
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 
