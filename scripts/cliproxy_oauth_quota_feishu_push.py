@@ -15,6 +15,7 @@ ADMIN_SCRIPT = os.path.join(REPO_ROOT, "scripts", "cliproxy_admin.py")
 UTC_PLUS_8 = ZoneInfo("Asia/Shanghai")
 DEFAULT_TITLE = "Codex OAuth 上游额度推送"
 DEFAULT_WEBHOOK = os.environ.get("CLIPROXY_FEISHU_WEBHOOK", "").strip()
+DEFAULT_PLAN_PREFIX = os.environ.get("CLIPROXY_FEISHU_PLAN_PREFIX", "").strip().lower()
 DEFAULT_PROBE_MODEL = os.environ.get("CLIPROXY_OAUTH_PROBE_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
 DEFAULT_PROBE_TIMEOUT = int(os.environ.get("CLIPROXY_OAUTH_PROBE_TIMEOUT_SECONDS", "30"))
 
@@ -30,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--webhook-url", default=DEFAULT_WEBHOOK, help="Feishu bot webhook URL")
     parser.add_argument("--title", default=DEFAULT_TITLE, help="Push title shown in the Feishu message")
+    parser.add_argument(
+        "--plan-prefix",
+        default=DEFAULT_PLAN_PREFIX,
+        help="only include rows whose plan_type starts with this prefix (for example: pro)",
+    )
     parser.add_argument(
         "--probe-model",
         default=DEFAULT_PROBE_MODEL,
@@ -116,8 +122,20 @@ def transform_row(row: dict) -> dict[str, object]:
     }
 
 
-def build_payload(raw_rows: list[dict]) -> list[dict[str, object]]:
-    rows = [transform_row(row) for row in raw_rows if is_codex_oauth_row(row)]
+def matches_plan_prefix(row: dict, plan_prefix: str) -> bool:
+    normalized = plan_prefix.strip().lower()
+    if not normalized:
+        return True
+    plan_type = str(row.get("plan_type", "")).strip().lower()
+    return plan_type.startswith(normalized)
+
+
+def build_payload(raw_rows: list[dict], plan_prefix: str) -> list[dict[str, object]]:
+    rows = [
+        transform_row(row)
+        for row in raw_rows
+        if is_codex_oauth_row(row) and matches_plan_prefix(row, plan_prefix)
+    ]
     rows.sort(key=lambda item: str(item.get("account", "")).lower())
     return rows
 
@@ -170,8 +188,10 @@ def check_feishu_response(response: dict) -> None:
 def main() -> int:
     args = parse_args()
     raw_rows = fetch_raw_rows(args.probe_model, args.probe_timeout)
-    payload = build_payload(raw_rows)
+    payload = build_payload(raw_rows, args.plan_prefix)
     if not payload:
+        if args.plan_prefix:
+            fail(f"no Codex OAuth upstream accounts matched plan prefix: {args.plan_prefix}")
         fail("no Codex OAuth upstream accounts found in oauth-quota output")
 
     if args.json_only:

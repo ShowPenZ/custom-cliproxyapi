@@ -191,6 +191,14 @@ CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx'
 ./scripts/cliproxy-oauth-quota-feishu-push
 ```
 
+Only push Pro-tier accounts to Feishu:
+
+```bash
+CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx' \
+CLIPROXY_FEISHU_PLAN_PREFIX='pro' \
+./scripts/cliproxy-oauth-quota-feishu-push
+```
+
 The pushed per-account payload is remapped to:
 
 - `account`
@@ -206,7 +214,7 @@ Cron example for UTC+8 `10:00`, `13:00`, `16:00`, `19:00`, `22:00`:
 - Debian/Ubuntu `cron` does not reliably support `CRON_TZ` in user crontabs. Use the wrapper below so the schedule still follows Shanghai time even when the host runs in another timezone or DST changes.
 
 ```cron
-0 * * * * cd /opt/cliproxyapi && CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx' ./scripts/cliproxy-oauth-quota-feishu-cron >> /var/log/cliproxy-oauth-quota-feishu.log 2>&1
+0 * * * * cd /opt/cliproxyapi && CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx' CLIPROXY_FEISHU_PLAN_PREFIX='pro' ./scripts/cliproxy-oauth-quota-feishu-cron >> /var/log/cliproxy-oauth-quota-feishu.log 2>&1
 ```
 
 Remote HTTPS API for authenticated clients:
