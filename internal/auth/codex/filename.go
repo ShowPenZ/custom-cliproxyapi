@@ -11,7 +11,7 @@ import (
 // as a suffix to disambiguate subscriptions.
 func CredentialFileName(email, planType, hashAccountID string, includeProviderPrefix bool) string {
 	email = strings.TrimSpace(email)
-	plan := normalizePlanTypeForFilename(planType)
+	plan := NormalizePlanType(planType)
 
 	prefix := ""
 	if includeProviderPrefix {
@@ -26,7 +26,8 @@ func CredentialFileName(email, planType, hashAccountID string, includeProviderPr
 	return fmt.Sprintf("%s-%s-%s.json", prefix, email, plan)
 }
 
-func normalizePlanTypeForFilename(planType string) string {
+// NormalizePlanType converts a provider plan value into a lower-case, filename-safe form.
+func NormalizePlanType(planType string) string {
 	planType = strings.TrimSpace(planType)
 	if planType == "" {
 		return ""
@@ -43,4 +44,26 @@ func normalizePlanTypeForFilename(planType string) string {
 		parts[i] = strings.ToLower(strings.TrimSpace(part))
 	}
 	return strings.Join(parts, "-")
+}
+
+// AccountGroupFromPlanType maps Codex subscription plans into stable account groups.
+func AccountGroupFromPlanType(planType string) string {
+	normalized := NormalizePlanType(planType)
+	switch {
+	case normalized == "", normalized == "unknown":
+		return ""
+	case normalized == "pro", strings.HasSuffix(normalized, "-pro"):
+		return "pro"
+	case normalized == "plus", strings.HasSuffix(normalized, "-plus"):
+		return "plus"
+	case normalized == "free", strings.HasSuffix(normalized, "-free"):
+		return "free"
+	case normalized == "team", normalized == "business", normalized == "enterprise", normalized == "go":
+		return "team"
+	case strings.HasSuffix(normalized, "-team"), strings.HasSuffix(normalized, "-business"),
+		strings.HasSuffix(normalized, "-enterprise"), strings.HasSuffix(normalized, "-go"):
+		return "team"
+	default:
+		return normalized
+	}
 }

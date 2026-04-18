@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shanghai_hour="$(TZ=Asia/Shanghai date +%H)"
+
+case "$shanghai_hour" in
+  10|13|16|19|22)
+    exec /opt/cliproxyapi/scripts/cliproxy-oauth-quota-feishu-push "$@"
+    ;;
+  *)
+    exit 0
+    ;;
+esac

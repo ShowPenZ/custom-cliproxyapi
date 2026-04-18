@@ -105,6 +105,15 @@ func buildRuntimeAuthEntry(auth *coreauth.Auth, reg *registry.ModelRegistry, now
 			entry["priority"] = priority
 		}
 	}
+	if planType := authPlanType(auth); planType != "" {
+		entry["plan_type"] = planType
+	}
+	if group, label := authAccountGroup(auth); group != "" {
+		entry["account_group"] = group
+		if label != "" {
+			entry["account_group_label"] = label
+		}
+	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
 	}
@@ -136,9 +145,6 @@ func buildRuntimeAuthEntry(auth *coreauth.Auth, reg *registry.ModelRegistry, now
 	}
 
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
-		if planType, ok := claims["plan_type"]; ok {
-			entry["plan_type"] = planType
-		}
 		if accountID, ok := claims["chatgpt_account_id"]; ok {
 			entry["chatgpt_account_id"] = accountID
 		}

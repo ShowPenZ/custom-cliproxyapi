@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/oauthenv"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -28,9 +29,12 @@ const (
 	iFlowAPIKeyEndpoint = "https://platform.iflow.cn/api/openapi/apikey"
 
 	// Client credentials provided by iFlow for the Code Assist integration.
-	iFlowOAuthClientID     = "10009311001"
-	iFlowOAuthClientSecret = "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW"
+	iFlowOAuthClientID = "10009311001"
 )
+
+func iFlowOAuthClientSecret() string {
+	return oauthenv.IFlowClientSecret()
+}
 
 // DefaultAPIBaseURL is the canonical chat completions endpoint.
 const DefaultAPIBaseURL = "https://apis.iflow.cn/v1"
@@ -67,12 +71,16 @@ func (ia *IFlowAuth) AuthorizationURL(state string, port int) (authURL, redirect
 
 // ExchangeCodeForTokens exchanges an authorization code for access and refresh tokens.
 func (ia *IFlowAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectURI string) (*IFlowTokenData, error) {
+	clientSecret := iFlowOAuthClientSecret()
+	if clientSecret == "" {
+		return nil, fmt.Errorf("iflow token: missing %s", oauthenv.IFlowClientSecretEnv)
+	}
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
 	form.Set("redirect_uri", redirectURI)
 	form.Set("client_id", iFlowOAuthClientID)
-	form.Set("client_secret", iFlowOAuthClientSecret)
+	form.Set("client_secret", clientSecret)
 
 	req, err := ia.newTokenRequest(ctx, form)
 	if err != nil {
@@ -84,11 +92,15 @@ func (ia *IFlowAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectUR
 
 // RefreshTokens exchanges a refresh token for a new access token.
 func (ia *IFlowAuth) RefreshTokens(ctx context.Context, refreshToken string) (*IFlowTokenData, error) {
+	clientSecret := iFlowOAuthClientSecret()
+	if clientSecret == "" {
+		return nil, fmt.Errorf("iflow token: missing %s", oauthenv.IFlowClientSecretEnv)
+	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", iFlowOAuthClientID)
-	form.Set("client_secret", iFlowOAuthClientSecret)
+	form.Set("client_secret", clientSecret)
 
 	req, err := ia.newTokenRequest(ctx, form)
 	if err != nil {
@@ -104,7 +116,11 @@ func (ia *IFlowAuth) newTokenRequest(ctx context.Context, form url.Values) (*htt
 		return nil, fmt.Errorf("iflow token: create request failed: %w", err)
 	}
 
-	basic := base64.StdEncoding.EncodeToString([]byte(iFlowOAuthClientID + ":" + iFlowOAuthClientSecret))
+	clientSecret := iFlowOAuthClientSecret()
+	if clientSecret == "" {
+		return nil, fmt.Errorf("iflow token: missing %s", oauthenv.IFlowClientSecretEnv)
+	}
+	basic := base64.StdEncoding.EncodeToString([]byte(iFlowOAuthClientID + ":" + clientSecret))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Basic "+basic)

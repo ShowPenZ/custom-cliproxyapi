@@ -16,12 +16,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
 
@@ -189,8 +191,12 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// It is forwarded as execution metadata; when absent we generate a UUID.
 	key := ""
+	var ginCtx *gin.Context
 	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		if resolvedGinCtx, ok := ctx.Value("gin").(*gin.Context); ok && resolvedGinCtx != nil {
+			ginCtx = resolvedGinCtx
+		}
+		if ginCtx != nil && ginCtx.Request != nil {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
 		}
 	}
@@ -198,7 +204,11 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		key = uuid.NewString()
 	}
 
-	meta := map[string]any{idempotencyKeyMetadataKey: key}
+	meta := requestScopedMetadataFromGin(ginCtx)
+	if len(meta) == 0 {
+		meta = make(map[string]any, 4)
+	}
+	meta[idempotencyKeyMetadataKey] = key
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
 	}
@@ -209,6 +219,55 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
 	}
 	return meta
+}
+
+func requestScopedMetadataFromGin(c *gin.Context) map[string]any {
+	if c == nil {
+		return nil
+	}
+	meta := make(map[string]any, 2)
+	if value, exists := c.Get("requestedAccountGroup"); exists {
+		if group := normalizeMetadataString(value); group != "" {
+			meta[coreexecutor.RequestedAccountGroupMetadataKey] = group
+		}
+	}
+	if value, exists := c.Get("codexAllowPro"); exists {
+		if allow, ok := normalizeMetadataBool(value); ok {
+			meta[coreexecutor.CodexAllowProMetadataKey] = allow
+		}
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
+func normalizeMetadataString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	default:
+		return ""
+	}
+}
+
+func normalizeMetadataBool(value any) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.TrimSpace(strings.ToLower(v)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		}
+	case []byte:
+		return normalizeMetadataBool(string(v))
+	}
+	return false, false
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {
@@ -634,6 +693,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		defer close(dataChan)
 		defer close(errChan)
 		sentPayload := false
+		responsesCompleted := false
 		bootstrapRetries := 0
 		maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 
@@ -678,6 +738,12 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 					chunk, ok = <-chunks
 				}
 				if !ok {
+					if handlerType == "openai-response" && sentPayload && !responsesCompleted {
+						_ = sendErr(&interfaces.ErrorMessage{
+							StatusCode: http.StatusRequestTimeout,
+							Error:      fmt.Errorf("stream closed before response.completed"),
+						})
+					}
 					return
 				}
 				if chunk.Err != nil {
@@ -720,6 +786,9 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 							_ = sendErr(&interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
 							return
 						}
+						if containsResponsesCompletedEvent(chunk.Payload) {
+							responsesCompleted = true
+						}
 					}
 					sentPayload = true
 					if okSendData := sendData(cloneBytes(chunk.Payload)); !okSendData {
@@ -759,6 +828,34 @@ func validateSSEDataJSON(chunk []byte) error {
 		return fmt.Errorf("invalid SSE data JSON (len=%d): %q", len(data), preview)
 	}
 	return nil
+}
+
+func containsResponsesCompletedEvent(chunk []byte) bool {
+	chunk = bytes.TrimSpace(chunk)
+	if len(chunk) == 0 {
+		return false
+	}
+	if json.Valid(chunk) && gjson.GetBytes(chunk, "type").String() == "response.completed" {
+		return true
+	}
+
+	for _, line := range bytes.Split(chunk, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(line[5:])
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) || !json.Valid(data) {
+			continue
+		}
+		if gjson.GetBytes(data, "type").String() == "response.completed" {
+			return true
+		}
+	}
+	return false
 }
 
 func statusFromError(err error) int {
@@ -833,6 +930,75 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+// FilterModelsForRequest hides models that are not reachable under the current request's auth policy.
+func (h *BaseAPIHandler) FilterModelsForRequest(c *gin.Context, models []map[string]any) []map[string]any {
+	if h == nil || h.AuthManager == nil || len(models) == 0 {
+		return models
+	}
+	meta := requestScopedMetadataFromGin(c)
+	if len(meta) == 0 {
+		return models
+	}
+
+	auths := h.AuthManager.List()
+	if len(auths) == 0 {
+		return models
+	}
+
+	allowedAuths := make([]*coreauth.Auth, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil || auth.Disabled {
+			continue
+		}
+		if !coreauth.AuthAllowedForMetadata(auth, meta) {
+			continue
+		}
+		allowedAuths = append(allowedAuths, auth)
+	}
+	if len(allowedAuths) == 0 {
+		return nil
+	}
+	if len(allowedAuths) == len(auths) {
+		return models
+	}
+
+	modelRegistry := registry.GetGlobalRegistry()
+	if modelRegistry == nil {
+		return models
+	}
+
+	filtered := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		modelID := extractModelID(model)
+		if modelID == "" {
+			filtered = append(filtered, model)
+			continue
+		}
+		for _, auth := range allowedAuths {
+			if modelRegistry.ClientSupportsModel(auth.ID, modelID) {
+				filtered = append(filtered, model)
+				break
+			}
+		}
+	}
+	return filtered
+}
+
+func extractModelID(model map[string]any) string {
+	if len(model) == 0 {
+		return ""
+	}
+	if rawID, ok := model["id"].(string); ok {
+		return strings.TrimSpace(rawID)
+	}
+	if rawName, ok := model["name"].(string); ok {
+		name := strings.TrimSpace(rawName)
+		name = strings.TrimPrefix(name, "models/")
+		return name
+	}
+	return ""
 }
 
 func cloneBytes(src []byte) []byte {

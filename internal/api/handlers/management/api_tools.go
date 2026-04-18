@@ -11,18 +11,19 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
-	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
+	antigravityauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
+	geminiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
 
-var antigravityOAuthTokenURL = "https://oauth2.googleapis.com/token"
+var antigravityOAuthTokenURL = antigravityauth.TokenEndpoint
 
 type apiCallRequest struct {
 	AuthIndexSnake  *string           `json:"auth_index"`
@@ -291,10 +292,16 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 			}
 		}
 	}
+	clientSecret := geminiauth.ClientSecret()
+	if clientSecret == "" {
+		return "", fmt.Errorf("missing Gemini OAuth client secret")
+	}
 
-	conf, errTokenConfig := geminiAuth.NewOAuthConfig("")
-	if errTokenConfig != nil {
-		return "", errTokenConfig
+	conf := &oauth2.Config{
+		ClientID:     geminiauth.ClientID,
+		ClientSecret: clientSecret,
+		Scopes:       geminiauth.Scopes,
+		Endpoint:     google.Endpoint,
 	}
 
 	ctxToken := ctx
@@ -345,12 +352,12 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	if tokenURL == "" {
 		tokenURL = "https://oauth2.googleapis.com/token"
 	}
-	clientID, clientSecret, errCreds := antigravity.OAuthCredentials()
-	if errCreds != nil {
-		return "", errCreds
+	clientSecret := antigravityauth.ClientSecret()
+	if clientSecret == "" {
+		return "", fmt.Errorf("missing Antigravity OAuth client secret")
 	}
 	form := url.Values{}
-	form.Set("client_id", clientID)
+	form.Set("client_id", antigravityauth.ClientID)
 	form.Set("client_secret", clientSecret)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)

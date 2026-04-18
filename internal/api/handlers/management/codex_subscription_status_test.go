@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,7 +12,41 @@ import (
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
+
+type codexSubscriptionRefreshTestExecutor struct {
+	refreshedAuth *coreauth.Auth
+}
+
+func (e *codexSubscriptionRefreshTestExecutor) Identifier() string { return "codex" }
+
+func (e *codexSubscriptionRefreshTestExecutor) Execute(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *codexSubscriptionRefreshTestExecutor) ExecuteStream(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (e *codexSubscriptionRefreshTestExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	if e.refreshedAuth == nil {
+		return auth, nil
+	}
+	return e.refreshedAuth.Clone(), nil
+}
+
+func (e *codexSubscriptionRefreshTestExecutor) CountTokens(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *codexSubscriptionRefreshTestExecutor) HttpRequest(_ context.Context, _ *coreauth.Auth, _ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(stringsNewReader(`{"ok":true}`)),
+		Header:     make(http.Header),
+	}, nil
+}
 
 func TestGetAuthenticatedCodexSubscriptionStatusRequiresAPIKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -125,7 +160,7 @@ func TestGetAuthenticatedCodexSubscriptionStatusSortsBySubscriptionActiveUntil(t
 	})
 
 	h := &Handler{authManager: manager}
-	rows := h.collectCodexSubscriptionStatusRows()
+	rows := h.collectCodexSubscriptionStatusRows(context.Background(), false)
 	if got := len(rows); got != 2 {
 		t.Fatalf("rows len = %d, want 2", got)
 	}
@@ -134,6 +169,96 @@ func TestGetAuthenticatedCodexSubscriptionStatusSortsBySubscriptionActiveUntil(t
 	}
 	if rows[1].Account != "later@example.com" {
 		t.Fatalf("rows[1].account = %q, want %q", rows[1].Account, "later@example.com")
+	}
+}
+
+func TestGetAuthenticatedCodexSubscriptionStatusRefreshesExpiredSubscriptionClaim(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().UTC()
+	oldUntil := now.Add(-72 * time.Hour).Format(time.RFC3339)
+	newUntil := now.Add(29 * 24 * time.Hour).Format(time.RFC3339)
+	lastChecked := now.Add(-48 * time.Hour).Format(time.RFC3339)
+	newLastChecked := now.Format(time.RFC3339)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&codexSubscriptionRefreshTestExecutor{
+		refreshedAuth: &coreauth.Auth{
+			ID:       "codex-stale.json",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Metadata: map[string]any{
+				"email":         "stale@example.com",
+				"refresh_token": "refresh-1",
+				"access_token":  "token-2",
+				"expired":       now.Add(7 * 24 * time.Hour).Format(time.RFC3339),
+				"id_token": buildCodexTestJWT(
+					t,
+					"stale@example.com",
+					"plus",
+					"acct-refresh",
+					newLastChecked,
+					now.Add(-30*24*time.Hour).Format(time.RFC3339),
+					newUntil,
+				),
+			},
+		},
+	})
+	_, _ = manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-stale.json",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"email":         "stale@example.com",
+			"refresh_token": "refresh-1",
+			"access_token":  "token-1",
+			"expired":       now.Add(2 * time.Hour).Format(time.RFC3339),
+			"id_token": buildCodexTestJWT(
+				t,
+				"stale@example.com",
+				"plus",
+				"acct-old",
+				lastChecked,
+				now.Add(-60*24*time.Hour).Format(time.RFC3339),
+				oldUntil,
+			),
+		},
+	})
+
+	h := &Handler{authManager: manager}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/codex-subscription-status", nil)
+	c.Set("apiKey", "sk-team-alice-1234567890abcdef")
+
+	h.GetAuthenticatedCodexSubscriptionStatus(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var payload codexSubscriptionStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got := len(payload.Accounts); got != 1 {
+		t.Fatalf("accounts len = %d, want 1", got)
+	}
+	row := payload.Accounts[0]
+	if row.ChatGPTAccountID != "acct-refresh" {
+		t.Fatalf("chatgpt_account_id = %q, want %q", row.ChatGPTAccountID, "acct-refresh")
+	}
+	if row.SubscriptionActiveUntil == nil {
+		t.Fatal("subscription_active_until = nil, want value")
+	}
+	if got := row.SubscriptionActiveUntil.Format(time.RFC3339); got != now.Add(29*24*time.Hour).UTC().Format(time.RFC3339) {
+		t.Fatalf("subscription_active_until = %q, want %q", got, now.Add(29*24*time.Hour).UTC().Format(time.RFC3339))
+	}
+	if row.SubscriptionLastCheckedAt == nil {
+		t.Fatal("subscription_last_checked_at = nil, want value")
+	}
+	if got := row.SubscriptionLastCheckedAt.Format(time.RFC3339); got != now.Format(time.RFC3339) {
+		t.Fatalf("subscription_last_checked_at = %q, want %q", got, now.Format(time.RFC3339))
 	}
 }
 

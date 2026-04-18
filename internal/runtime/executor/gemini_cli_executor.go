@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
+	geminiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
@@ -29,6 +29,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 const (
@@ -594,10 +595,16 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 			}
 		}
 	}
+	clientSecret := geminiauth.ClientSecret()
+	if clientSecret == "" {
+		return nil, nil, fmt.Errorf("missing Gemini OAuth client secret")
+	}
 
-	conf, err := geminiAuth.NewOAuthConfig("")
-	if err != nil {
-		return nil, nil, err
+	conf := &oauth2.Config{
+		ClientID:     geminiauth.ClientID,
+		ClientSecret: clientSecret,
+		Scopes:       geminiauth.Scopes,
+		Endpoint:     google.Endpoint,
 	}
 
 	ctxToken := ctx

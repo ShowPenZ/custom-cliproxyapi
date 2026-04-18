@@ -14,13 +14,14 @@ import (
 // editableField represents an editable field on an auth file.
 type editableField struct {
 	label string
-	key   string // API field key: "prefix", "proxy_url", "priority"
+	key   string // API field key: "prefix", "proxy_url", "priority", "account_group"
 }
 
 var authEditableFields = []editableField{
 	{label: "Prefix", key: "prefix"},
 	{label: "Proxy URL", key: "proxy_url"},
 	{label: "Priority", key: "priority"},
+	{label: "Account Group", key: "account_group"},
 }
 
 // authTabModel displays auth credential files with interactive management.
@@ -277,6 +278,8 @@ func (m authTabModel) renderDetail(f map[string]any) string {
 		{"Status Msg", "status_message", false},
 		{"File Name", "file_name", false},
 		{"Auth Type", "auth_type", false},
+		{"Plan Type", "plan_type", false},
+		{"Account Group", "account_group", true},
 		{"Prefix", "prefix", true},
 		{"Proxy URL", "proxy_url", true},
 		{"Priority", "priority", true},
@@ -445,6 +448,8 @@ func (m authTabModel) handleNormalInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) 
 		return m, m.startEdit(1) // proxy_url
 	case "3":
 		return m, m.startEdit(2) // priority
+	case "4":
+		return m, m.startEdit(3) // account_group
 	case "r":
 		m.status = ""
 		return m, m.fetchFiles

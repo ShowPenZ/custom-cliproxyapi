@@ -17,7 +17,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CONTAINER = os.environ.get("CLIPROXY_CONTAINER", "cli-proxy-api")
 DEFAULT_MGMT_KEY = os.environ.get(
     "CLIPROXY_MANAGEMENT_KEY",
-    "mgmt-change-me",
+    "mgmt-8615d984ec794432eb836228350e42ee33b4f80d26de5a3e",
 )
 DEFAULT_PUBLIC_API = os.environ.get("CLIPROXY_PUBLIC_API", "https://tradetd.cloud-ip.cc/v1")
 LOCAL_MGMT_HOST = os.environ.get("CLIPROXY_LOCAL_MGMT_HOST", "127.0.0.1")
@@ -37,7 +37,7 @@ DEFAULT_OAUTH_PROBE_ENDPOINT = os.environ.get(
 DEFAULT_OAUTH_PROBE_TEXT = os.environ.get("CLIPROXY_OAUTH_PROBE_TEXT", "Reply with OK only.")
 ANTIGRAVITY_CLIENT_ID = os.environ.get(
     "CLIPROXY_ANTIGRAVITY_CLIENT_ID",
-    "",
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
 )
 ANTIGRAVITY_CLIENT_SECRET = os.environ.get(
     "CLIPROXY_ANTIGRAVITY_CLIENT_SECRET",
@@ -139,6 +139,18 @@ def normalise_iso(value: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def normalise_iso_in_timezone(value: str, tz: timezone) -> str:
+    if not value:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(tz)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def normalise_epoch_seconds(value: Any) -> str:
     return normalise_epoch_seconds_in_timezone(value, UTC)
 
@@ -199,6 +211,7 @@ def blank_oauth_quota_row(account: str) -> dict[str, Any]:
         "account": account,
         "state": "-",
         "plan_type": "-",
+        "subscription_active_until": "-",
         "last_seen": "-",
         "auth_id": "-",
         "source_log": "-",
@@ -315,6 +328,9 @@ def collect_oauth_quota_rows(log_dir: str) -> list[dict[str, Any]]:
         runtime_plan = str(entry.get("plan_type", "")).strip()
         if runtime_plan:
             row["plan_type"] = runtime_plan
+        runtime_subscription_until = str(entry.get("subscription_active_until", "")).strip()
+        if runtime_subscription_until:
+            row["subscription_active_until"] = normalise_iso_in_timezone(runtime_subscription_until, UTC_PLUS_8)
         pending.add(account)
 
     stop_when_runtime_accounts_found = bool(pending)
@@ -382,6 +398,10 @@ def merge_oauth_auth_file_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
             plan_type = str(entry.get("id_token", {}).get("plan_type", "")).strip()
             if plan_type:
                 row["plan_type"] = plan_type
+        if str(row.get("subscription_active_until", "")).strip() in {"", "-"}:
+            subscription_until = str(entry.get("id_token", {}).get("chatgpt_subscription_active_until", "")).strip()
+            if subscription_until:
+                row["subscription_active_until"] = normalise_iso_in_timezone(subscription_until, UTC_PLUS_8)
 
     return sorted(merged.values(), key=lambda item: str(item.get("account", "")).lower())
 
@@ -629,6 +649,142 @@ def api_json(method: str, path: str, payload: Any = None) -> Any:
     if "json" in ctype or text.startswith("{") or text.startswith("["):
         return json.loads(text)
     return text
+
+
+def scalar_or_dash(value: Any) -> str:
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    return text or "-"
+
+
+def fetch_management_oauth_quota_rows(probe: bool, model: str, timeout_seconds: int) -> list[dict[str, Any]] | None:
+    query = []
+    if probe:
+        query.append("probe=1")
+        query.append("refresh=1")
+    if model.strip():
+        query.append(f"model={urllib.parse.quote(model.strip(), safe='')}")
+    if timeout_seconds > 0:
+        query.append(f"timeout_seconds={max(1, int(timeout_seconds))}")
+
+    path = "/v0/management/oauth-quota"
+    if query:
+        path += "?" + "&".join(query)
+
+    url = f"http://127.0.0.1:{LOCAL_MGMT_PORT}{path}"
+    cmd = [
+        "docker",
+        "exec",
+        "-e",
+        f"CLIPROXY_LOCAL_MGMT_URL={url}",
+        "-e",
+        f"CLIPROXY_LOCAL_MGMT_KEY={DEFAULT_MGMT_KEY}",
+        DEFAULT_CONTAINER,
+        "/bin/sh",
+        "-lc",
+        'wget -qO- --header "Authorization: Bearer $CLIPROXY_LOCAL_MGMT_KEY" --header "Accept: application/json" "$CLIPROXY_LOCAL_MGMT_URL"',
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    text = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        if "404" in stderr:
+            return None
+        fail(stderr or f"GET {path} failed with exit code {proc.returncode}")
+    if not text:
+        return []
+    if not text.startswith("{"):
+        fail(f"unexpected oauth-quota response: {text}")
+
+    payload = json.loads(text)
+    accounts = payload.get("accounts", [])
+    if not isinstance(accounts, list):
+        fail("unexpected oauth-quota response: accounts is not a list")
+    return [normalise_management_oauth_quota_row(entry) for entry in accounts if isinstance(entry, dict)]
+
+
+def normalise_management_oauth_quota_row(entry: dict[str, Any]) -> dict[str, Any]:
+    account = scalar_or_dash(entry.get("account"))
+    row = blank_oauth_quota_row("-" if account == "-" else account)
+    row["account"] = account
+    row["state"] = scalar_or_dash(entry.get("state"))
+    row["plan_type"] = scalar_or_dash(entry.get("plan_type"))
+
+    subscription_until = str(entry.get("subscription_active_until", "")).strip()
+    if subscription_until:
+        row["subscription_active_until"] = normalise_iso_in_timezone(subscription_until, UTC_PLUS_8)
+
+    row["auth_id"] = scalar_or_dash(entry.get("auth_id"))
+    row["source_log"] = scalar_or_dash(entry.get("source"))
+    row["primary_used_percent"] = scalar_or_dash(entry.get("primary_used_percent"))
+    row["primary_remaining_percent"] = scalar_or_dash(entry.get("primary_remaining_percent"))
+
+    primary_reset_at = str(entry.get("primary_reset_at", "")).strip()
+    if primary_reset_at:
+        row["primary_reset_at"] = normalise_iso_in_timezone(primary_reset_at, UTC_PLUS_8)
+    row["primary_reset_after_seconds"] = scalar_or_dash(entry.get("primary_reset_after_seconds"))
+
+    row["secondary_used_percent"] = scalar_or_dash(entry.get("secondary_used_percent"))
+    row["secondary_remaining_percent"] = scalar_or_dash(entry.get("secondary_remaining_percent"))
+
+    secondary_reset_at = str(entry.get("secondary_reset_at", "")).strip()
+    if secondary_reset_at:
+        row["secondary_reset_at"] = normalise_iso_in_timezone(secondary_reset_at, UTC_PLUS_8)
+    row["secondary_reset_after_seconds"] = scalar_or_dash(entry.get("secondary_reset_after_seconds"))
+
+    last_seen = str(entry.get("last_seen", "")).strip()
+    if last_seen:
+        row["last_seen"] = normalise_iso_in_timezone(last_seen, UTC_PLUS_8)
+
+    row["probe_model"] = scalar_or_dash(entry.get("probe_model"))
+    row["probe_status_code"] = scalar_or_dash(entry.get("probe_status_code"))
+    row["probe_error"] = scalar_or_dash(entry.get("probe_error"))
+    return row
+
+
+def parse_datetime_guess(value: Any) -> datetime | None:
+    text = str(value).strip()
+    if not text or text == "-":
+        return None
+    for layout in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            dt = datetime.strptime(text, layout)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC_PLUS_8)
+            return dt
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC_PLUS_8)
+    return dt
+
+
+def hide_stale_subscription_until(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = datetime.now(UTC_PLUS_8)
+    for row in rows:
+        raw_value = str(row.get("subscription_active_until", "")).strip()
+        subscription_until = parse_datetime_guess(row.get("subscription_active_until"))
+        if subscription_until is None or subscription_until > now:
+            continue
+        if str(row.get("state", "")).strip().lower() != "online":
+            continue
+        source = str(row.get("source_log", "")).strip().lower()
+        has_live_quota = any(
+            str(row.get(key, "")).strip() not in {"", "-"}
+            for key in ("primary_used_percent", "secondary_used_percent")
+        )
+        if source != "live-probe" or not has_live_quota:
+            continue
+        if raw_value not in {"", "-"}:
+            row["subscription_active_until"] = f"已过期（{raw_value}）"
+        else:
+            row["subscription_active_until"] = "已过期"
+    return rows
 
 
 def raw_local_api(method: str, path: str, bearer_token: str, payload: Any = None) -> tuple[int, dict[str, str], bytes]:
@@ -1242,6 +1398,8 @@ def refresh_antigravity_auth(auth_id: str, auth_payload: dict[str, Any], timeout
     refresh_token = str(auth_payload.get("refresh_token", "")).strip()
     if not refresh_token:
         raise RuntimeError(f"{auth_id}: missing refresh_token")
+    if not ANTIGRAVITY_CLIENT_SECRET:
+        raise RuntimeError(f"{auth_id}: missing CLIPROXY_ANTIGRAVITY_CLIENT_SECRET")
 
     form = {
         "client_id": ANTIGRAVITY_CLIENT_ID,
@@ -1524,19 +1682,20 @@ def command_upstream_status(args: argparse.Namespace) -> int:
         print(f"No runtime upstream auths found for provider: {provider}")
         return 0
 
-    print(f"{'STATE':<12} {'TYPE':<8} {'ACCOUNT':<32} {'PLAN':<8} {'RECOVER AT':<19} {'MODELS':>6} {'SOURCE':<8} {'PREFIX'}")
+    print(f"{'STATE':<12} {'TYPE':<8} {'ACCOUNT':<32} {'PLAN':<8} {'GROUP':<12} {'RECOVER AT':<19} {'MODELS':>6} {'SOURCE':<8} {'PREFIX'}")
     for entry in auths:
         state = str(entry.get("state", "")).strip() or "-"
         account_type = str(entry.get("account_type", "")).strip() or "-"
         account = display_account(entry)
         plan_type = str(entry.get("plan_type", "")).strip() or "-"
+        account_group = str(entry.get("account_group", "")).strip() or "-"
         recover_at = normalise_iso(str(entry.get("quota_next_recover_at", "")).strip())
         if recover_at == "-":
             recover_at = normalise_iso(str(entry.get("next_retry_after", "")).strip())
         model_count = int(entry.get("model_count", 0) or 0)
         source = str(entry.get("source", "")).strip() or "-"
         prefix = str(entry.get("prefix", "")).strip() or "-"
-        print(f"{state:<12} {account_type:<8} {account:<32} {plan_type:<8} {recover_at:<19} {model_count:>6} {source:<8} {prefix}")
+        print(f"{state:<12} {account_type:<8} {account:<32} {plan_type:<8} {account_group:<12} {recover_at:<19} {model_count:>6} {source:<8} {prefix}")
         if args.details:
             status = str(entry.get("status", "")).strip() or "-"
             unavailable = bool(entry.get("unavailable", False))
@@ -1723,9 +1882,12 @@ def command_antigravity_quota(args: argparse.Namespace) -> int:
 
 
 def command_oauth_quota(args: argparse.Namespace) -> int:
-    rows = merge_oauth_auth_file_rows(collect_oauth_quota_rows(args.log_dir))
-    if args.probe:
-        rows = apply_oauth_probe(rows, args.probe_model, args.probe_timeout)
+    rows = fetch_management_oauth_quota_rows(args.probe, args.probe_model, args.probe_timeout)
+    if rows is None:
+        rows = merge_oauth_auth_file_rows(collect_oauth_quota_rows(args.log_dir))
+        if args.probe:
+            rows = apply_oauth_probe(rows, args.probe_model, args.probe_timeout)
+    rows = hide_stale_subscription_until(rows)
 
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -1745,7 +1907,7 @@ def command_oauth_quota(args: argparse.Namespace) -> int:
 
     print()
     print(
-        f"{'ACCOUNT':<32} {'STATE':<12} {'PLAN':<8} "
+        f"{'ACCOUNT':<32} {'STATE':<12} {'PLAN':<8} {'PLUS-UNTIL':<19} "
         f"{'P-LEFT':>6} {'P-USED':>6} {'P-RESET':<19} "
         f"{'S-LEFT':>6} {'S-USED':>6} {'S-RESET':<19} "
         f"{'LAST SEEN':<19}"
@@ -1754,6 +1916,7 @@ def command_oauth_quota(args: argparse.Namespace) -> int:
         account = str(row.get("account", "")).strip() or "-"
         state = str(row.get("state", "")).strip() or "-"
         plan_type = str(row.get("plan_type", "")).strip() or "-"
+        subscription_active_until = str(row.get("subscription_active_until", "")).strip() or "-"
         p_left = str(row.get("primary_remaining_percent", "")).strip() or "-"
         p_used = str(row.get("primary_used_percent", "")).strip() or "-"
         p_reset = str(row.get("primary_reset_at", "")).strip() or "-"
@@ -1762,7 +1925,7 @@ def command_oauth_quota(args: argparse.Namespace) -> int:
         s_reset = str(row.get("secondary_reset_at", "")).strip() or "-"
         last_seen = str(row.get("last_seen", "")).strip() or "-"
         print(
-            f"{account:<32} {state:<12} {plan_type:<8} "
+            f"{account:<32} {state:<12} {plan_type:<8} {subscription_active_until:<19} "
             f"{p_left:>6} {p_used:>6} {p_reset:<19} "
             f"{s_left:>6} {s_used:>6} {s_reset:<19} "
             f"{last_seen:<19}"

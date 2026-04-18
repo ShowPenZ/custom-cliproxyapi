@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
+	antigravityauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -1118,13 +1118,13 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	if refreshToken == "" {
 		return auth, statusErr{code: http.StatusUnauthorized, msg: "missing refresh token"}
 	}
-	clientID, clientSecret, errCreds := antigravity.OAuthCredentials()
-	if errCreds != nil {
-		return auth, errCreds
+	clientSecret := antigravityauth.ClientSecret()
+	if clientSecret == "" {
+		return auth, statusErr{code: http.StatusUnauthorized, msg: "missing antigravity oauth client secret"}
 	}
 
 	form := url.Values{}
-	form.Set("client_id", clientID)
+	form.Set("client_id", antigravityauth.ClientID)
 	form.Set("client_secret", clientSecret)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)

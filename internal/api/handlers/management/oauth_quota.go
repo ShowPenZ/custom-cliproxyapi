@@ -41,6 +41,7 @@ type oauthQuotaAccountEntry struct {
 	Account                 string     `json:"account"`
 	State                   string     `json:"state"`
 	PlanType                string     `json:"plan_type,omitempty"`
+	SubscriptionActiveUntil *time.Time `json:"subscription_active_until,omitempty"`
 	AuthID                  string     `json:"auth_id,omitempty"`
 	PrimaryUsedPercent      *int       `json:"primary_used_percent,omitempty"`
 	PrimaryRemainingPercent *int       `json:"primary_remaining_percent,omitempty"`
@@ -79,12 +80,22 @@ func (h *Handler) GetAuthenticatedOAuthQuota(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": true, "message": "missing api key"})
 		return
 	}
+	h.writeOAuthQuotaResponse(c, clientAPIKey)
+}
+
+// GetManagementOAuthQuota returns the same OAuth quota snapshot for management callers.
+func (h *Handler) GetManagementOAuthQuota(c *gin.Context) {
+	h.writeOAuthQuotaResponse(c, "")
+}
+
+func (h *Handler) writeOAuthQuotaResponse(c *gin.Context, clientAPIKey string) {
 	if h == nil || h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": true, "message": "core auth manager unavailable"})
 		return
 	}
 
 	probe := queryTruthy(c.Query("probe"))
+	refresh := queryTruthy(c.Query("refresh"))
 	model := strings.TrimSpace(c.Query("model"))
 	if model == "" {
 		model = oauthQuotaProbeModel
@@ -96,22 +107,28 @@ func (h *Handler) GetAuthenticatedOAuthQuota(c *gin.Context) {
 		}
 	}
 
-	rows := h.collectOAuthQuotaRows(c.Request.Context(), probe, model, timeout)
+	rows := h.collectOAuthQuotaRows(c.Request.Context(), probe, refresh, model, timeout)
 
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
 	c.Header("X-Content-Type-Options", "nosniff")
+	user := ownerFromKey(clientAPIKey)
+	apiKey := maskAPIKey(clientAPIKey)
+	if strings.TrimSpace(clientAPIKey) == "" {
+		user = "management"
+		apiKey = ""
+	}
 	c.JSON(http.StatusOK, oauthQuotaResponse{
 		Error:       false,
-		User:        ownerFromKey(clientAPIKey),
-		APIKey:      maskAPIKey(clientAPIKey),
+		User:        user,
+		APIKey:      apiKey,
 		Probe:       probe,
 		RequestedAt: time.Now().UTC(),
 		Accounts:    rows,
 	})
 }
 
-func (h *Handler) collectOAuthQuotaRows(ctx context.Context, probe bool, model string, timeout time.Duration) []oauthQuotaAccountEntry {
+func (h *Handler) collectOAuthQuotaRows(ctx context.Context, probe, forceRefresh bool, model string, timeout time.Duration) []oauthQuotaAccountEntry {
 	now := time.Now()
 	auths := h.authManager.List()
 	rows := make([]oauthQuotaAccountEntry, 0, len(auths))
@@ -127,17 +144,24 @@ func (h *Handler) collectOAuthQuotaRows(ctx context.Context, probe bool, model s
 			continue
 		}
 
+		workingAuth, err := h.refreshCodexSubscriptionAuth(ctx, auth, forceRefresh || probe)
+		if err == nil && workingAuth != nil {
+			auth = workingAuth
+			accountType, account = auth.AccountInfo()
+			if !strings.EqualFold(accountType, "oauth") {
+				continue
+			}
+		}
+
 		row := oauthQuotaAccountEntry{
 			Account: strings.TrimSpace(account),
 			State:   deriveRuntimeAuthState(auth, now),
 			AuthID:  strings.TrimSpace(auth.ID),
 			Source:  "runtime",
 		}
-		if claims := extractCodexIDTokenClaims(auth); claims != nil {
-			if planType, ok := claims["plan_type"].(string); ok {
-				row.PlanType = strings.TrimSpace(planType)
-			}
-		}
+		snapshot := codexSubscriptionSnapshotFromAuth(auth)
+		row.PlanType = snapshot.planType
+		row.SubscriptionActiveUntil = snapshot.subscriptionActiveUntil
 
 		if probe {
 			h.applyOAuthProbe(ctx, auth, &row, model, timeout)

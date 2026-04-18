@@ -178,9 +178,36 @@ cliproxy-oauth-quota --json
 Quota notes:
 
 - `cliproxy-oauth-quota` reads recent request logs under `/opt/cliproxyapi/logs` and extracts the latest seen `X-Codex-*` quota headers per OAuth account.
+- `PLUS-UNTIL` / `subscription_active_until` comes from the cached Codex OAuth `id_token` and shows the ChatGPT Plus renewal/expiry timestamp when that claim is present.
+- `cliproxy-oauth-quota --probe` now refreshes each Codex OAuth `id_token` once before reading `subscription_active_until`, so stale expired renewal dates are corrected during a live probe.
 - `P-LEFT` / `S-LEFT` are computed as `100 - used_percent`.
 - If an account has not served a recent request yet, its quota fields remain `unknown` / `-` until the next successful upstream response is logged.
 - `cliproxy-oauth-quota --probe` sends one small live request to each OAuth account and refreshes the displayed quota from the upstream response headers directly.
+
+Push the live Codex OAuth quota snapshot to Feishu:
+
+```bash
+CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx' \
+./scripts/cliproxy-oauth-quota-feishu-push
+```
+
+The pushed per-account payload is remapped to:
+
+- `account`
+- `state`
+- `会员到期时间` = `subscription_active_until`
+- `5小时额度剩余` = `primary_remaining_percent`
+- `5小时额度重置时间` = `primary_reset_at`
+- `周额度剩余` = `secondary_remaining_percent`
+- `周额度重置时间` = `secondary_reset_at`
+
+Cron example for UTC+8 `10:00`, `13:00`, `16:00`, `19:00`, `22:00`:
+
+- Debian/Ubuntu `cron` does not reliably support `CRON_TZ` in user crontabs. Use the wrapper below so the schedule still follows Shanghai time even when the host runs in another timezone or DST changes.
+
+```cron
+0 * * * * cd /opt/cliproxyapi && CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx' ./scripts/cliproxy-oauth-quota-feishu-cron >> /var/log/cliproxy-oauth-quota-feishu.log 2>&1
+```
 
 Remote HTTPS API for authenticated clients:
 
@@ -194,11 +221,15 @@ Remote HTTPS API for Codex OAuth subscription status:
 ```bash
 curl 'https://tradetd.cloud-ip.cc/v1/api/codex-subscription-status' \
   -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
+
+curl 'https://tradetd.cloud-ip.cc/v1/api/codex-subscription-status?refresh=1' \
+  -H 'Authorization: Bearer sk-team-alice-xxxxxxxxxxxxxxxx'
 ```
 
 Codex subscription status notes:
 
 - This endpoint reads cached ChatGPT subscription metadata from each Codex OAuth account's `id_token`.
+- `refresh=1` forces one token refresh per Codex OAuth account before returning the subscription fields.
 - `subscription_active_until` is the cached Plus renewal/expiry timestamp carried in the token, not a live billing API lookup.
 - `token_expires_at` is only the current OAuth token expiry time and is not the same as the ChatGPT Plus renewal date.
 

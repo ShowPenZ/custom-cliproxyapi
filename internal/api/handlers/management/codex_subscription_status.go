@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"strings"
@@ -47,7 +48,8 @@ func (h *Handler) GetAuthenticatedCodexSubscriptionStatus(c *gin.Context) {
 		return
 	}
 
-	rows := h.collectCodexSubscriptionStatusRows()
+	refresh := queryTruthy(c.Query("refresh"))
+	rows := h.collectCodexSubscriptionStatusRows(c.Request.Context(), refresh)
 
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
@@ -61,7 +63,7 @@ func (h *Handler) GetAuthenticatedCodexSubscriptionStatus(c *gin.Context) {
 	})
 }
 
-func (h *Handler) collectCodexSubscriptionStatusRows() []codexSubscriptionStatusAccount {
+func (h *Handler) collectCodexSubscriptionStatusRows(ctx context.Context, forceRefresh bool) []codexSubscriptionStatusAccount {
 	if h == nil || h.authManager == nil {
 		return nil
 	}
@@ -80,6 +82,15 @@ func (h *Handler) collectCodexSubscriptionStatusRows() []codexSubscriptionStatus
 		accountType, account := auth.AccountInfo()
 		if !strings.EqualFold(strings.TrimSpace(accountType), "oauth") {
 			continue
+		}
+
+		workingAuth, err := h.refreshCodexSubscriptionAuth(ctx, auth, forceRefresh)
+		if err == nil && workingAuth != nil {
+			auth = workingAuth
+			accountType, account = auth.AccountInfo()
+			if !strings.EqualFold(strings.TrimSpace(accountType), "oauth") {
+				continue
+			}
 		}
 
 		row := codexSubscriptionStatusAccount{
@@ -101,17 +112,12 @@ func (h *Handler) collectCodexSubscriptionStatusRows() []codexSubscriptionStatus
 			row.TokenExpiresAt = &ts
 		}
 
-		if claims := extractCodexIDTokenClaims(auth); claims != nil {
-			if planType, ok := claims["plan_type"].(string); ok {
-				row.PlanType = strings.TrimSpace(planType)
-			}
-			if accountID, ok := claims["chatgpt_account_id"].(string); ok {
-				row.ChatGPTAccountID = strings.TrimSpace(accountID)
-			}
-			row.SubscriptionActiveStart = claimTimeValue(claims["chatgpt_subscription_active_start"])
-			row.SubscriptionActiveUntil = claimTimeValue(claims["chatgpt_subscription_active_until"])
-			row.SubscriptionLastCheckedAt = claimTimeValue(claims["chatgpt_subscription_last_checked"])
-		}
+		snapshot := codexSubscriptionSnapshotFromAuth(auth)
+		row.PlanType = snapshot.planType
+		row.ChatGPTAccountID = snapshot.chatGPTAccountID
+		row.SubscriptionActiveStart = snapshot.subscriptionActiveStart
+		row.SubscriptionActiveUntil = snapshot.subscriptionActiveUntil
+		row.SubscriptionLastCheckedAt = snapshot.subscriptionLastChecked
 
 		rows = append(rows, row)
 	}

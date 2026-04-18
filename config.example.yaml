@@ -37,6 +37,33 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Optional: restrict selected client API keys to proxy endpoints only.
+# Keys listed here can call model proxy routes (for example /v1/models,
+# /v1/chat/completions, /v1/messages, /v1/responses, /v1beta/models, /api/provider/*)
+# but cannot access auxiliary public endpoints such as /v1/api/* or /api/usage.
+# proxy-only-api-keys:
+#   - "sk-team-proxy-only-1"
+
+# Optional: restrict selected client API keys to Claude-compatible endpoints only.
+# Keys listed here can call Anthropic/Claude routes such as /v1/messages,
+# /v1/messages/count_tokens, /v1/models/claude, and /api/provider/anthropic/*
+# but cannot access OpenAI/Gemini proxy routes or auxiliary public endpoints.
+# For shared model-list aliases like /v1/models, the request must identify itself
+# as Claude CLI via a User-Agent that starts with "claude-cli".
+# claude-only-api-keys:
+#   - "sk-team-claude-only-1"
+
+# Optional: restrict access to Codex auths in the `pro` account group.
+# When this list is non-empty, only the listed client API keys may use Codex auths
+# whose account_group resolves to `pro`. Other keys will be routed only to non-pro
+# Codex auths. Clients can explicitly request a group with:
+#   - Header: X-Codex-Account-Group: pro
+#   - Header: X-Account-Group: pro
+#   - Query:  ?codex_account_group=pro
+#   - Query:  ?account_group=pro
+# codex-pro-api-keys:
+#   - "sk-team-codex-pro-1"
+
 # Enable debug logging
 debug: false
 

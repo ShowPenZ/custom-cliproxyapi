@@ -19,6 +19,10 @@ const (
 	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
 	ExecutionSessionMetadataKey = "execution_session_id"
+	// RequestedAccountGroupMetadataKey requests a specific upstream account group (for example "pro").
+	RequestedAccountGroupMetadataKey = "requested_account_group"
+	// CodexAllowProMetadataKey indicates whether the downstream client may use Codex "pro" auths.
+	CodexAllowProMetadataKey = "codex_allow_pro"
 )
 
 // Request encapsulates the translated payload that will be sent to a provider executor.

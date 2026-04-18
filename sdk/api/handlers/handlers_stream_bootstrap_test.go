@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"sync"
@@ -134,6 +135,8 @@ type authAwareStreamExecutor struct {
 	authIDs []string
 }
 
+type responsesCloseBeforeCompletedExecutor struct{}
+
 type invalidJSONStreamExecutor struct{}
 
 func (e *invalidJSONStreamExecutor) Identifier() string { return "codex" }
@@ -158,6 +161,37 @@ func (e *invalidJSONStreamExecutor) CountTokens(context.Context, *coreauth.Auth,
 }
 
 func (e *invalidJSONStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{
+		Code:       "not_implemented",
+		Message:    "HttpRequest not implemented",
+		HTTPStatus: http.StatusNotImplemented,
+	}
+}
+
+func (e *responsesCloseBeforeCompletedExecutor) Identifier() string { return "codex" }
+
+func (e *responsesCloseBeforeCompletedExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *responsesCloseBeforeCompletedExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	ch := make(chan coreexecutor.StreamChunk, 1)
+	ch <- coreexecutor.StreamChunk{
+		Payload: []byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"),
+	}
+	close(ch)
+	return &coreexecutor.StreamResult{Chunks: ch}, nil
+}
+
+func (e *responsesCloseBeforeCompletedExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *responsesCloseBeforeCompletedExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *responsesCloseBeforeCompletedExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
 	return nil, &coreauth.Error{
 		Code:       "not_implemented",
 		Message:    "HttpRequest not implemented",
@@ -428,6 +462,60 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 	}
 	if executor.Calls() != 1 {
 		t.Fatalf("expected 1 stream attempt, got %d", executor.Calls())
+	}
+}
+
+func TestExecuteStreamWithAuthManager_OpenAIResponsesRequiresCompletedEvent(t *testing.T) {
+	executor := &responsesCloseBeforeCompletedExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{
+		ID:       "auth1",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"email": "test1@example.com"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("manager.Register(auth): %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "test-model", []byte(`{"model":"test-model","stream":true}`), "")
+	if dataChan == nil || errChan == nil {
+		t.Fatalf("expected non-nil channels")
+	}
+
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+
+	var gotErr error
+	var gotStatus int
+	for msg := range errChan {
+		if msg != nil && msg.Error != nil {
+			gotErr = msg.Error
+			gotStatus = msg.StatusCode
+		}
+	}
+
+	if !bytes.Contains(got, []byte("response.created")) {
+		t.Fatalf("expected partial responses payload, got %q", string(got))
+	}
+	if gotErr == nil {
+		t.Fatalf("expected terminal error, got nil")
+	}
+	if gotErr.Error() != "stream closed before response.completed" {
+		t.Fatalf("expected response.completed error, got %q", gotErr.Error())
+	}
+	if gotStatus != http.StatusRequestTimeout {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestTimeout, gotStatus)
 	}
 }
 

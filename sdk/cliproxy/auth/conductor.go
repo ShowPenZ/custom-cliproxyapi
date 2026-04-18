@@ -2332,6 +2332,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if candidate.Provider != provider || candidate.Disabled {
 			continue
 		}
+		if !AuthAllowedForMetadata(candidate, opts.Metadata) {
+			continue
+		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
@@ -2429,6 +2432,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
+			continue
+		}
+		if !AuthAllowedForMetadata(candidate, opts.Metadata) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {

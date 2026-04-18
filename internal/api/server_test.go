@@ -185,6 +185,111 @@ func TestClaudeCompatibilityRoutes(t *testing.T) {
 	})
 }
 
+func TestCodexProAPIKeys_FilterModelsAndRestrictToProGroup(t *testing.T) {
+	server := newTestServer(t)
+	server.cfg.APIKeys = []string{"basic-key", "pro-key"}
+	server.cfg.CodexProAPIKeys = []string{"pro-key"}
+	server.applyAccessConfig(nil, server.cfg)
+
+	ctx := context.Background()
+	if _, err := server.handlers.AuthManager.Register(ctx, &auth.Auth{
+		ID:       "codex-plus-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"account_group": "plus",
+		},
+	}); err != nil {
+		t.Fatalf("register plus auth: %v", err)
+	}
+	if _, err := server.handlers.AuthManager.Register(ctx, &auth.Auth{
+		ID:       "codex-pro-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"account_group": "pro",
+		},
+	}); err != nil {
+		t.Fatalf("register pro auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("codex-plus-auth", "codex", []*registry.ModelInfo{{ID: "codex-plus-model", Object: "model"}})
+	reg.RegisterClient("codex-pro-auth", "codex", []*registry.ModelInfo{{ID: "codex-pro-model", Object: "model"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient("codex-plus-auth")
+		reg.UnregisterClient("codex-pro-auth")
+	})
+
+	t.Run("non pro key does not see pro model", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer basic-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, "codex-plus-model") {
+			t.Fatalf("expected plus model in body: %s", body)
+		}
+		if strings.Contains(body, "codex-pro-model") {
+			t.Fatalf("did not expect pro model in body: %s", body)
+		}
+	})
+
+	t.Run("pro key only sees pro model", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer pro-key")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if strings.Contains(body, "codex-plus-model") {
+			t.Fatalf("did not expect plus model in body: %s", body)
+		}
+		if !strings.Contains(body, "codex-pro-model") {
+			t.Fatalf("expected pro model in body: %s", body)
+		}
+	})
+
+	t.Run("pro key explicit non pro group is forbidden", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer pro-key")
+		req.Header.Set("X-Codex-Account-Group", "plus")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "restricted to Codex pro account group") {
+			t.Fatalf("unexpected body: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("non pro key explicit pro group is forbidden", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer basic-key")
+		req.Header.Set("X-Codex-Account-Group", "pro")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "not allowed to request Codex pro account group") {
+			t.Fatalf("unexpected body: %s", rr.Body.String())
+		}
+	})
+}
+
 func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	t.Setenv("WRITABLE_PATH", "")
 	t.Setenv("writable_path", "")

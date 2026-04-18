@@ -15,8 +15,9 @@ import (
 )
 
 type oauthQuotaTestExecutor struct {
-	statusCode int
-	headers    http.Header
+	statusCode  int
+	headers     http.Header
+	refreshAuth *coreauth.Auth
 }
 
 func (e *oauthQuotaTestExecutor) Identifier() string { return "codex" }
@@ -30,6 +31,9 @@ func (e *oauthQuotaTestExecutor) ExecuteStream(context.Context, *coreauth.Auth, 
 }
 
 func (e *oauthQuotaTestExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	if e.refreshAuth != nil {
+		return e.refreshAuth.Clone(), nil
+	}
 	return auth, nil
 }
 
@@ -99,7 +103,7 @@ func TestGetAuthenticatedOAuthQuotaProbe(t *testing.T) {
 			"email":        "test@example.com",
 			"account_id":   "acct-1",
 			"access_token": "token-1",
-			"id_token":     `{"https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}`,
+			"id_token":     buildCodexTestJWT(t, "test@example.com", "plus", "acct-1", "2026-04-01T02:39:29.735608+00:00", "2026-03-31T09:27:29+00:00", "2026-04-30T09:27:28+00:00"),
 		},
 	})
 	_, _ = manager.Register(context.Background(), &coreauth.Auth{
@@ -137,6 +141,12 @@ func TestGetAuthenticatedOAuthQuotaProbe(t *testing.T) {
 	if row.Account != "test@example.com" {
 		t.Fatalf("account = %q, want %q", row.Account, "test@example.com")
 	}
+	if row.SubscriptionActiveUntil == nil {
+		t.Fatal("subscription_active_until = nil, want value")
+	}
+	if got := row.SubscriptionActiveUntil.Format(time.RFC3339); got != "2026-04-30T09:27:28Z" {
+		t.Fatalf("subscription_active_until = %q, want %q", got, "2026-04-30T09:27:28Z")
+	}
 	if row.PrimaryUsedPercent == nil || *row.PrimaryUsedPercent != 61 {
 		t.Fatalf("primary_used_percent = %v, want 61", row.PrimaryUsedPercent)
 	}
@@ -146,16 +156,145 @@ func TestGetAuthenticatedOAuthQuotaProbe(t *testing.T) {
 	if row.PrimaryResetAt == nil {
 		t.Fatal("primary_reset_at = nil, want value")
 	}
-	if got := row.PrimaryResetAt.Format(time.RFC3339); got != "2026-03-28T09:26:02+08:00" {
-		t.Fatalf("primary_reset_at = %q, want %q", got, "2026-03-28T09:26:02+08:00")
+	if got := row.PrimaryResetAt.Format(time.RFC3339); got != "2026-03-29T16:06:02+08:00" {
+		t.Fatalf("primary_reset_at = %q, want %q", got, "2026-03-29T16:06:02+08:00")
 	}
 	if row.SecondaryResetAt == nil {
 		t.Fatal("secondary_reset_at = nil, want value")
 	}
-	if got := row.SecondaryResetAt.Format(time.RFC3339); got != "2026-04-01T20:04:13+08:00" {
-		t.Fatalf("secondary_reset_at = %q, want %q", got, "2026-04-01T20:04:13+08:00")
+	if got := row.SecondaryResetAt.Format(time.RFC3339); got != "2026-04-03T10:44:13+08:00" {
+		t.Fatalf("secondary_reset_at = %q, want %q", got, "2026-04-03T10:44:13+08:00")
 	}
 	if row.ProbeStatusCode == nil || *row.ProbeStatusCode != http.StatusOK {
 		t.Fatalf("probe_status_code = %v, want 200", row.ProbeStatusCode)
+	}
+}
+
+func TestGetAuthenticatedOAuthQuotaProbeRefreshesSubscriptionClaim(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().UTC()
+	newUntil := now.Add(30 * 24 * time.Hour).Format(time.RFC3339)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&oauthQuotaTestExecutor{
+		headers: http.Header{
+			"X-Codex-Plan-Type":            []string{"plus"},
+			"X-Codex-Primary-Used-Percent": []string{"12"},
+		},
+		refreshAuth: &coreauth.Auth{
+			ID:       "codex-stale-plus.json",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Metadata: map[string]any{
+				"email":         "refresh@example.com",
+				"account_id":    "acct-new",
+				"access_token":  "token-2",
+				"refresh_token": "refresh-1",
+				"expired":       now.Add(7 * 24 * time.Hour).Format(time.RFC3339),
+				"id_token": buildCodexTestJWT(
+					t,
+					"refresh@example.com",
+					"plus",
+					"acct-new",
+					now.Format(time.RFC3339),
+					now.Add(-15*24*time.Hour).Format(time.RFC3339),
+					newUntil,
+				),
+			},
+		},
+	})
+	_, _ = manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-stale-plus.json",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"email":         "refresh@example.com",
+			"account_id":    "acct-old",
+			"access_token":  "token-1",
+			"refresh_token": "refresh-1",
+			"expired":       now.Add(2 * time.Hour).Format(time.RFC3339),
+			"id_token": buildCodexTestJWT(
+				t,
+				"refresh@example.com",
+				"plus",
+				"acct-old",
+				now.Add(-48*time.Hour).Format(time.RFC3339),
+				now.Add(-60*24*time.Hour).Format(time.RFC3339),
+				now.Add(-72*time.Hour).Format(time.RFC3339),
+			),
+		},
+	})
+
+	h := &Handler{authManager: manager}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/oauth-quota?probe=1", nil)
+	c.Set("apiKey", "sk-team-alice-1234567890abcdef")
+
+	h.GetAuthenticatedOAuthQuota(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var payload oauthQuotaResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got := len(payload.Accounts); got != 1 {
+		t.Fatalf("accounts len = %d, want 1", got)
+	}
+	row := payload.Accounts[0]
+	if row.SubscriptionActiveUntil == nil {
+		t.Fatal("subscription_active_until = nil, want value")
+	}
+	if got := row.SubscriptionActiveUntil.Format(time.RFC3339); got != now.Add(30*24*time.Hour).UTC().Format(time.RFC3339) {
+		t.Fatalf("subscription_active_until = %q, want %q", got, now.Add(30*24*time.Hour).UTC().Format(time.RFC3339))
+	}
+	if row.PrimaryUsedPercent == nil || *row.PrimaryUsedPercent != 12 {
+		t.Fatalf("primary_used_percent = %v, want 12", row.PrimaryUsedPercent)
+	}
+}
+
+func TestGetManagementOAuthQuotaDoesNotRequireAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	_, _ = manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-management-plus.json",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"email":        "manage@example.com",
+			"account_id":   "acct-mgmt",
+			"access_token": "token-mgmt",
+			"id_token":     buildCodexTestJWT(t, "manage@example.com", "plus", "acct-mgmt", "2026-04-01T02:39:29.735608+00:00", "2026-03-31T09:27:29+00:00", "2026-04-30T09:27:28+00:00"),
+		},
+	})
+
+	h := &Handler{authManager: manager}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/oauth-quota", nil)
+
+	h.GetManagementOAuthQuota(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var payload oauthQuotaResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.User != "management" {
+		t.Fatalf("user = %q, want %q", payload.User, "management")
+	}
+	if got := len(payload.Accounts); got != 1 {
+		t.Fatalf("accounts len = %d, want 1", got)
+	}
+	if payload.Accounts[0].Account != "manage@example.com" {
+		t.Fatalf("account = %q, want %q", payload.Accounts[0].Account, "manage@example.com")
 	}
 }

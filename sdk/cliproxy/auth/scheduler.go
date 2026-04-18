@@ -194,6 +194,9 @@ func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, 
 		if entry == nil || entry.auth == nil {
 			return false
 		}
+		if !AuthAllowedForMetadata(entry.auth, opts.Metadata) {
+			return false
+		}
 		if pinnedAuthID != "" && entry.auth.ID != pinnedAuthID {
 			return false
 		}
@@ -238,6 +241,9 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 			if entry == nil || entry.auth == nil || entry.auth.ID != pinnedAuthID {
 				return false
 			}
+			if !AuthAllowedForMetadata(entry.auth, opts.Metadata) {
+				return false
+			}
 			if len(tried) == 0 {
 				return true
 			}
@@ -250,7 +256,7 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 		return nil, "", shard.unavailableErrorLocked("mixed", model, predicate)
 	}
 
-	predicate := triedPredicate(tried)
+	predicate := policyAwarePredicate(triedPredicate(tried), opts.Metadata)
 	candidateShards := make([]*modelScheduler, len(normalized))
 	bestPriority := 0
 	hasCandidate := false
@@ -360,6 +366,21 @@ func triedPredicate(tried map[string]struct{}) func(*scheduledAuth) bool {
 		}
 		_, ok := tried[entry.auth.ID]
 		return !ok
+	}
+}
+
+func policyAwarePredicate(base func(*scheduledAuth) bool, meta map[string]any) func(*scheduledAuth) bool {
+	return func(entry *scheduledAuth) bool {
+		if entry == nil || entry.auth == nil {
+			return false
+		}
+		if !AuthAllowedForMetadata(entry.auth, meta) {
+			return false
+		}
+		if base == nil {
+			return true
+		}
+		return base(entry)
 	}
 }
 

@@ -110,6 +110,9 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	if auths[0].ProxyURL != "http://proxy.local" {
 		t.Errorf("expected proxy_url http://proxy.local, got %s", auths[0].ProxyURL)
 	}
+	if got := auths[0].Attributes["account_group"]; got != "" {
+		t.Errorf("expected empty account_group, got %q", got)
+	}
 	if v, ok := auths[0].Metadata["disable_cooling"].(bool); !ok || !v {
 		t.Errorf("expected disable_cooling true, got %v", auths[0].Metadata["disable_cooling"])
 	}
@@ -118,6 +121,40 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	}
 	if auths[0].Status != coreauth.StatusActive {
 		t.Errorf("expected status active, got %s", auths[0].Status)
+	}
+}
+
+func TestFileSynthesizer_Synthesize_ExplicitAccountGroup(t *testing.T) {
+	tempDir := t.TempDir()
+
+	authData := map[string]any{
+		"type":          "codex",
+		"email":         "pro@example.com",
+		"account_group": "pro-only",
+	}
+	data, _ := json.Marshal(authData)
+	err := os.WriteFile(filepath.Join(tempDir, "codex-auth.json"), data, 0644)
+	if err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	if got := auths[0].Attributes["account_group"]; got != "pro-only" {
+		t.Fatalf("account_group = %q, want %q", got, "pro-only")
 	}
 }
 

@@ -326,11 +326,13 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	authMiddleware := AuthMiddleware(s.accessManager)
+	codexGroupAccessMiddleware := s.codexGroupAccessMiddleware()
+	proxyOnlyMiddleware := s.proxyOnlyAPIKeyMiddleware()
 	publicProtectionMiddleware := middleware.PublicEndpointProtectionMiddleware(defaultPublicEndpointProtector)
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(authMiddleware, publicProtectionMiddleware)
+	v1.Use(authMiddleware, codexGroupAccessMiddleware, proxyOnlyMiddleware, publicProtectionMiddleware)
 	{
 		claudeModelsHandler := s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers)
 		v1.GET("/api/oauth-quota", s.mgmt.GetAuthenticatedOAuthQuota)
@@ -363,7 +365,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(authMiddleware, publicProtectionMiddleware)
+	v1beta.Use(authMiddleware, codexGroupAccessMiddleware, proxyOnlyMiddleware, publicProtectionMiddleware)
 	{
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -371,7 +373,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	userAPI := s.engine.Group("/api")
-	userAPI.Use(authMiddleware, publicProtectionMiddleware)
+	userAPI.Use(authMiddleware, codexGroupAccessMiddleware, proxyOnlyMiddleware, publicProtectionMiddleware)
 	{
 		userAPI.POST("/usage", s.mgmt.GetAuthenticatedUsage)
 	}
@@ -648,6 +650,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/oauth-model-alias", s.mgmt.PutOAuthModelAlias)
 		mgmt.PATCH("/oauth-model-alias", s.mgmt.PatchOAuthModelAlias)
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
+		mgmt.GET("/oauth-quota", s.mgmt.GetManagementOAuthQuota)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/runtime-auths", s.mgmt.ListRuntimeAuths)
@@ -1081,4 +1084,188 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		}
 		c.AbortWithStatusJSON(statusCode, gin.H{"error": err.Message})
 	}
+}
+
+func (s *Server) proxyOnlyAPIKeyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || s.cfg == nil {
+			c.Next()
+			return
+		}
+
+		rawAPIKey, exists := c.Get("apiKey")
+		if !exists {
+			c.Next()
+			return
+		}
+		apiKey, ok := rawAPIKey.(string)
+		if !ok || strings.TrimSpace(apiKey) == "" {
+			c.Next()
+			return
+		}
+		if !containsStringExact(s.cfg.ProxyOnlyAPIKeys, apiKey) {
+			if !containsStringExact(s.cfg.ClaudeOnlyAPIKeys, apiKey) {
+				c.Next()
+				return
+			}
+			if isAllowedClaudeOnlyRequest(c.Request) {
+				c.Next()
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "access denied: API key is restricted to Claude proxy endpoints",
+			})
+			return
+		}
+		if isAllowedProxyOnlyPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error": "access denied: API key is restricted to proxy endpoints",
+		})
+	}
+}
+
+func (s *Server) codexGroupAccessMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestedGroup := requestedAccountGroupFromRequest(c.Request)
+
+		if s == nil || s.cfg == nil || len(s.cfg.CodexProAPIKeys) == 0 {
+			if requestedGroup != "" {
+				c.Set("requestedAccountGroup", requestedGroup)
+			}
+			c.Next()
+			return
+		}
+
+		rawAPIKey, exists := c.Get("apiKey")
+		if !exists {
+			if requestedGroup != "" {
+				c.Set("requestedAccountGroup", requestedGroup)
+			}
+			c.Next()
+			return
+		}
+		apiKey, ok := rawAPIKey.(string)
+		if !ok || strings.TrimSpace(apiKey) == "" {
+			if requestedGroup != "" {
+				c.Set("requestedAccountGroup", requestedGroup)
+			}
+			c.Next()
+			return
+		}
+
+		allowPro := containsStringExact(s.cfg.CodexProAPIKeys, apiKey)
+		c.Set("codexAllowPro", allowPro)
+		if allowPro {
+			if requestedGroup == "" {
+				requestedGroup = "pro"
+			} else if !strings.EqualFold(requestedGroup, "pro") {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"error": "access denied: API key is restricted to Codex pro account group",
+				})
+				return
+			}
+		}
+		if requestedGroup != "" {
+			c.Set("requestedAccountGroup", requestedGroup)
+		}
+		if strings.EqualFold(requestedGroup, "pro") && !allowPro {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "access denied: API key is not allowed to request Codex pro account group",
+			})
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func requestedAccountGroupFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	candidates := []string{
+		r.Header.Get("X-Codex-Account-Group"),
+		r.Header.Get("X-Account-Group"),
+	}
+	if r.URL != nil {
+		query := r.URL.Query()
+		candidates = append(candidates, query.Get("codex_account_group"), query.Get("account_group"))
+	}
+	for _, candidate := range candidates {
+		if group := strings.ToLower(strings.TrimSpace(candidate)); group != "" {
+			return group
+		}
+	}
+	return ""
+}
+
+func isAllowedClaudeOnlyRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	path := r.URL.Path
+	switch path {
+	case "/v1/messages",
+		"/v1/v1/messages",
+		"/v1/messages/v1/messages",
+		"/v1/messages/count_tokens",
+		"/v1/v1/messages/count_tokens",
+		"/v1/messages/v1/messages/count_tokens",
+		"/v1/models/claude",
+		"/v1/v1/models/claude",
+		"/v1/messages/v1/models/claude",
+		"/v1/models/v1/models/claude":
+		return true
+	case "/v1/models",
+		"/v1/v1/models",
+		"/v1/messages/v1/models",
+		"/v1/models/v1/models":
+		return strings.HasPrefix(strings.TrimSpace(r.Header.Get("User-Agent")), "claude-cli")
+	}
+
+	return strings.HasPrefix(path, "/api/provider/anthropic/")
+}
+
+func containsStringExact(values []string, needle string) bool {
+	trimmedNeedle := strings.TrimSpace(needle)
+	if trimmedNeedle == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == trimmedNeedle {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllowedProxyOnlyPath(path string) bool {
+	switch path {
+	case "/v1/models",
+		"/v1/v1/models",
+		"/v1/messages/v1/models",
+		"/v1/models/v1/models",
+		"/v1/models/claude",
+		"/v1/v1/models/claude",
+		"/v1/messages/v1/models/claude",
+		"/v1/models/v1/models/claude",
+		"/v1/chat/completions",
+		"/v1/completions",
+		"/v1/messages",
+		"/v1/v1/messages",
+		"/v1/messages/v1/messages",
+		"/v1/messages/count_tokens",
+		"/v1/v1/messages/count_tokens",
+		"/v1/messages/v1/messages/count_tokens",
+		"/v1/responses",
+		"/v1/responses/compact",
+		"/v1/ws":
+		return true
+	}
+
+	return strings.HasPrefix(path, "/v1beta/models") || strings.HasPrefix(path, "/api/provider/")
 }

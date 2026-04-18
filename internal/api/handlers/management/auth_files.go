@@ -38,6 +38,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
@@ -330,10 +331,24 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			// Read file to get type field
 			full := filepath.Join(h.cfg.AuthDir, name)
 			if data, errRead := os.ReadFile(full); errRead == nil {
+				var metadata map[string]any
+				_ = json.Unmarshal(data, &metadata)
 				typeValue := gjson.GetBytes(data, "type").String()
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				if planType := codexPlanTypeFromMetadata(metadata); planType != "" {
+					fileData["plan_type"] = planType
+				}
+				if group := configuredAccountGroupFromMetadata(metadata); group != "" {
+					fileData["account_group"] = group
+					fileData["account_group_label"] = accountGroupLabel(typeValue, group)
+				} else if strings.EqualFold(typeValue, "codex") {
+					if group := codex.AccountGroupFromPlanType(codexPlanTypeFromMetadata(metadata)); group != "" {
+						fileData["account_group"] = group
+						fileData["account_group_label"] = accountGroupLabel(typeValue, group)
+					}
+				}
 				if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
 					switch pv.Type {
 					case gjson.Number:
@@ -400,6 +415,15 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account"] = account
 		}
 	}
+	if planType := authPlanType(auth); planType != "" {
+		entry["plan_type"] = planType
+	}
+	if group, label := authAccountGroup(auth); group != "" {
+		entry["account_group"] = group
+		if label != "" {
+			entry["account_group_label"] = label
+		}
+	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
 	}
@@ -431,6 +455,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
+		if accountID, ok := claims["chatgpt_account_id"]; ok {
+			entry["chatgpt_account_id"] = accountID
+		}
+		if activeUntil, ok := claims["chatgpt_subscription_active_until"]; ok {
+			entry["subscription_active_until"] = activeUntil
+		}
 	}
 	// Expose priority from Attributes (set by synthesizer from JSON "priority" field).
 	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).
@@ -1002,6 +1032,19 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		"path":   path,
 		"source": path,
 	}
+	if group := configuredAccountGroupFromMetadata(metadata); group != "" {
+		attr["account_group"] = group
+	}
+	if strings.EqualFold(provider, "codex") {
+		if planType := codexPlanTypeFromMetadata(metadata); planType != "" {
+			attr["plan_type"] = planType
+			if _, ok := attr["account_group"]; !ok {
+				if group := codex.AccountGroupFromPlanType(planType); group != "" {
+					attr["account_group"] = group
+				}
+			}
+		}
+	}
 	auth := &coreauth.Auth{
 		ID:         authID,
 		Provider:   provider,
@@ -1108,7 +1151,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
-// PatchAuthFileFields updates editable fields (prefix, proxy_url, priority, note) of an auth file.
+// PatchAuthFileFields updates editable fields (prefix, proxy_url, priority, note, account_group) of an auth file.
 func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -1116,11 +1159,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string  `json:"name"`
-		Prefix   *string `json:"prefix"`
-		ProxyURL *string `json:"proxy_url"`
-		Priority *int    `json:"priority"`
-		Note     *string `json:"note"`
+		Name         string  `json:"name"`
+		Prefix       *string `json:"prefix"`
+		ProxyURL     *string `json:"proxy_url"`
+		Priority     *int    `json:"priority"`
+		Note         *string `json:"note"`
+		AccountGroup *string `json:"account_group"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1163,7 +1207,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		targetAuth.ProxyURL = *req.ProxyURL
 		changed = true
 	}
-	if req.Priority != nil || req.Note != nil {
+	if req.Priority != nil || req.Note != nil || req.AccountGroup != nil {
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
@@ -1188,6 +1232,16 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			} else {
 				targetAuth.Metadata["note"] = trimmedNote
 				targetAuth.Attributes["note"] = trimmedNote
+			}
+		}
+		if req.AccountGroup != nil {
+			trimmedGroup := strings.TrimSpace(*req.AccountGroup)
+			if trimmedGroup == "" {
+				delete(targetAuth.Metadata, "account_group")
+				delete(targetAuth.Attributes, "account_group")
+			} else {
+				targetAuth.Metadata["account_group"] = trimmedGroup
+				targetAuth.Attributes["account_group"] = trimmedGroup
 			}
 		}
 		changed = true
@@ -1436,13 +1490,19 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 	projectID := c.Query("project_id")
 
 	fmt.Println("Initializing Google authentication...")
-
-	conf, errConfig := geminiAuth.NewOAuthConfig(
-		fmt.Sprintf("http://localhost:%d/oauth2callback", geminiAuth.DefaultCallbackPort),
-	)
-	if errConfig != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": errConfig.Error()})
+	clientSecret := geminiAuth.ClientSecret()
+	if clientSecret == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "missing Gemini OAuth client secret"})
 		return
+	}
+
+	// OAuth2 configuration using exported constants from internal/auth/gemini
+	conf := &oauth2.Config{
+		ClientID:     geminiAuth.ClientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2callback", geminiAuth.DefaultCallbackPort),
+		Scopes:       geminiAuth.Scopes,
+		Endpoint:     google.Endpoint,
 	}
 
 	// Build authorization URL and return it immediately
@@ -1564,7 +1624,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		}
 
 		ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-		ifToken["client_id"] = conf.ClientID
+		ifToken["client_id"] = geminiAuth.ClientID
 		ifToken["client_secret"] = conf.ClientSecret
 		ifToken["scopes"] = geminiAuth.Scopes
 		ifToken["universe_domain"] = "googleapis.com"
@@ -1847,15 +1907,6 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
-	if strings.TrimSpace(authURL) == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf(
-				"antigravity oauth client id is not configured; set %s",
-				antigravity.ClientIDEnvVar,
-			),
-		})
-		return
-	}
 
 	RegisterOAuthSession(state, "antigravity")
 

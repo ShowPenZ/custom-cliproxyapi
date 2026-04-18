@@ -1,19 +1,17 @@
 // Package antigravity provides OAuth2 authentication functionality for the Antigravity provider.
 package antigravity
 
-import (
-	"fmt"
-	"os"
-	"strings"
+import "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/oauthenv"
+
+// OAuth client credentials and configuration
+const (
+	ClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+	CallbackPort = 51121
 )
 
-const (
-	CallbackPort             = 51121
-	ClientIDEnvVar           = "CLIPROXY_ANTIGRAVITY_CLIENT_ID"
-	ClientSecretEnvVar       = "CLIPROXY_ANTIGRAVITY_CLIENT_SECRET"
-	LegacyClientIDEnvVar     = "CLIPROXY_ANTIGRAVITY_OAUTH_CLIENT_ID"
-	LegacyClientSecretEnvVar = "CLIPROXY_ANTIGRAVITY_OAUTH_CLIENT_SECRET"
-)
+func ClientSecret() string {
+	return oauthenv.AntigravityClientSecret()
+}
 
 // Scopes defines the OAuth scopes required for Antigravity authentication
 var Scopes = []string{
@@ -39,33 +37,3 @@ const (
 	APIClient      = "google-cloud-sdk vscode_cloudshelleditor/0.1"
 	ClientMetadata = `{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}`
 )
-
-func OAuthClientID() string {
-	return firstNonEmptyEnv(ClientIDEnvVar, LegacyClientIDEnvVar)
-}
-
-func OAuthClientSecret() string {
-	return firstNonEmptyEnv(ClientSecretEnvVar, LegacyClientSecretEnvVar)
-}
-
-func OAuthCredentials() (string, string, error) {
-	clientID := OAuthClientID()
-	clientSecret := OAuthClientSecret()
-	if clientID == "" || clientSecret == "" {
-		return "", "", fmt.Errorf(
-			"antigravity oauth credentials are not configured; set %s and %s",
-			ClientIDEnvVar,
-			ClientSecretEnvVar,
-		)
-	}
-	return clientID, clientSecret, nil
-}
-
-func firstNonEmptyEnv(keys ...string) string {
-	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
-}

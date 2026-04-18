@@ -20,6 +20,22 @@ type SDKConfig struct {
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
+	// ProxyOnlyAPIKeys restricts selected client API keys to model proxy endpoints only.
+	// Keys listed here cannot access auxiliary public endpoints such as /v1/api/* or /api/usage.
+	ProxyOnlyAPIKeys []string `yaml:"proxy-only-api-keys,omitempty" json:"proxy-only-api-keys,omitempty"`
+
+	// ClaudeOnlyAPIKeys restricts selected client API keys to Claude-compatible proxy endpoints only.
+	// Keys listed here are limited to Anthropic/Claude routes such as /v1/messages and
+	// the Anthropic provider aliases under /api/provider/anthropic.
+	ClaudeOnlyAPIKeys []string `yaml:"claude-only-api-keys,omitempty" json:"claude-only-api-keys,omitempty"`
+
+	// CodexProAPIKeys whitelists client API keys that may use Codex auths in the "pro" account group.
+	// When this list is non-empty, client keys not listed here are prevented from selecting Codex
+	// auth entries whose account_group resolves to "pro". Requests may additionally pin a desired
+	// account group via X-Codex-Account-Group / X-Account-Group headers or the
+	// codex_account_group / account_group query parameter.
+	CodexProAPIKeys []string `yaml:"codex-pro-api-keys,omitempty" json:"codex-pro-api-keys,omitempty"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/oauthenv"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -52,13 +53,9 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 	if strings.TrimSpace(redirectURI) == "" {
 		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", CallbackPort)
 	}
-	clientID := OAuthClientID()
-	if clientID == "" {
-		return ""
-	}
 	params := url.Values{}
 	params.Set("access_type", "offline")
-	params.Set("client_id", clientID)
+	params.Set("client_id", ClientID)
 	params.Set("prompt", "consent")
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
@@ -69,13 +66,13 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 
 // ExchangeCodeForTokens exchanges authorization code for access and refresh tokens
 func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectURI string) (*TokenResponse, error) {
-	clientID, clientSecret, errCreds := OAuthCredentials()
-	if errCreds != nil {
-		return nil, errCreds
+	clientSecret := ClientSecret()
+	if clientSecret == "" {
+		return nil, fmt.Errorf("antigravity token exchange: missing %s", oauthenv.AntigravityClientSecretEnv)
 	}
 	data := url.Values{}
 	data.Set("code", code)
-	data.Set("client_id", clientID)
+	data.Set("client_id", ClientID)
 	data.Set("client_secret", clientSecret)
 	data.Set("redirect_uri", redirectURI)
 	data.Set("grant_type", "authorization_code")

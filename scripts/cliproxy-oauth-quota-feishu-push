@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec python3 /opt/cliproxyapi/scripts/cliproxy_oauth_quota_feishu_push.py "$@"

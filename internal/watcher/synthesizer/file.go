@@ -157,6 +157,15 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	if rawGroup, ok := metadata["account_group"].(string); ok {
+		if trimmed := strings.TrimSpace(rawGroup); trimmed != "" {
+			a.Attributes["account_group"] = trimmed
+		}
+	} else if rawGroup, ok := metadata["group"].(string); ok {
+		if trimmed := strings.TrimSpace(rawGroup); trimmed != "" {
+			a.Attributes["account_group"] = trimmed
+		}
+	}
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	// For codex auth files, extract plan_type from the JWT id_token.
 	if provider == "codex" {
@@ -164,6 +173,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			if claims, errParse := codex.ParseJWTToken(idTokenRaw); errParse == nil && claims != nil {
 				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
 					a.Attributes["plan_type"] = pt
+					if _, ok := a.Attributes["account_group"]; !ok {
+						if group := codex.AccountGroupFromPlanType(pt); group != "" {
+							a.Attributes["account_group"] = group
+						}
+					}
 				}
 			}
 		}
