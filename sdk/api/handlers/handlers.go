@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -189,7 +188,7 @@ func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 
 func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
-	// It is forwarded as execution metadata; when absent we generate a UUID.
+	// Only include it when the client explicitly provides it.
 	key := ""
 	var ginCtx *gin.Context
 	if ctx != nil {
@@ -200,15 +199,16 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
 		}
 	}
-	if key == "" {
-		key = uuid.NewString()
-	}
 
 	meta := requestScopedMetadataFromGin(ginCtx)
-	if len(meta) == 0 {
+	if len(meta) == 0 && key == "" {
+		meta = make(map[string]any, 3)
+	} else if len(meta) == 0 {
 		meta = make(map[string]any, 4)
 	}
-	meta[idempotencyKeyMetadataKey] = key
+	if key != "" {
+		meta[idempotencyKeyMetadataKey] = key
+	}
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
 	}

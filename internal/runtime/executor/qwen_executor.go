@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -152,11 +153,45 @@ func wrapQwenError(ctx context.Context, httpCode int, body []byte) (errCode int,
 	// Qwen returns 403 for quota errors, 429 for rate limits
 	if (httpCode == http.StatusForbidden || httpCode == http.StatusTooManyRequests) && isQwenQuotaError(body) {
 		errCode = http.StatusTooManyRequests // Map to 429 to trigger quota logic
-		cooldown := timeUntilNextDay()
-		retryAfter = &cooldown
-		logWithRequestID(ctx).Warnf("qwen quota exceeded (http %d -> %d), cooling down until tomorrow (%v)", httpCode, errCode, cooldown)
+		// Do not force an overly long retry-after here. The caller can prefer the
+		// upstream Retry-After header or a minimal fallback when cooling is disabled.
+		logWithRequestID(ctx).Warnf("qwen quota exceeded (http %d -> %d)", httpCode, errCode)
 	}
 	return errCode, retryAfter
+}
+
+func qwenDisableCooling(cfg *config.Config, auth *cliproxyauth.Auth) bool {
+	if auth != nil {
+		if override, ok := auth.DisableCoolingOverride(); ok {
+			return override
+		}
+	}
+	if cfg == nil {
+		return false
+	}
+	return cfg.DisableCooling
+}
+
+func parseRetryAfterHeader(header http.Header, now time.Time) *time.Duration {
+	raw := strings.TrimSpace(header.Get("Retry-After"))
+	if raw == "" {
+		return nil
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil {
+		if seconds <= 0 {
+			return nil
+		}
+		d := time.Duration(seconds) * time.Second
+		return &d
+	}
+	if at, err := http.ParseTime(raw); err == nil {
+		if !at.After(now) {
+			return nil
+		}
+		d := at.Sub(now)
+		return &d
+	}
+	return nil
 }
 
 // timeUntilNextDay returns duration until midnight Beijing time (UTC+8).
@@ -290,6 +325,13 @@ func (e *QwenExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		appendAPIResponseChunk(ctx, e.cfg, b)
 
 		errCode, retryAfter := wrapQwenError(ctx, httpResp.StatusCode, b)
+		if errCode == http.StatusTooManyRequests && retryAfter == nil {
+			retryAfter = parseRetryAfterHeader(httpResp.Header, time.Now())
+		}
+		if errCode == http.StatusTooManyRequests && retryAfter == nil && qwenDisableCooling(e.cfg, auth) && isQwenQuotaError(b) {
+			defaultRetryAfter := time.Second
+			retryAfter = &defaultRetryAfter
+		}
 		logWithRequestID(ctx).Debugf("request error, error status: %d (mapped: %d), error message: %s", httpResp.StatusCode, errCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		err = statusErr{code: errCode, msg: string(b), retryAfter: retryAfter}
 		return resp, err
@@ -395,6 +437,13 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		appendAPIResponseChunk(ctx, e.cfg, b)
 
 		errCode, retryAfter := wrapQwenError(ctx, httpResp.StatusCode, b)
+		if errCode == http.StatusTooManyRequests && retryAfter == nil {
+			retryAfter = parseRetryAfterHeader(httpResp.Header, time.Now())
+		}
+		if errCode == http.StatusTooManyRequests && retryAfter == nil && qwenDisableCooling(e.cfg, auth) && isQwenQuotaError(b) {
+			defaultRetryAfter := time.Second
+			retryAfter = &defaultRetryAfter
+		}
 		logWithRequestID(ctx).Debugf("request error, error status: %d (mapped: %d), error message: %s", httpResp.StatusCode, errCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("qwen executor: close response body error: %v", errClose)

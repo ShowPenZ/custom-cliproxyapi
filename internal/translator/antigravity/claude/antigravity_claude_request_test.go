@@ -54,6 +54,39 @@ func TestConvertClaudeRequestToAntigravity_BasicStructure(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeRequestToAntigravity_StripsBillingHeaderFromSystemInstruction(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "text", "text": "Hello"}
+				]
+			}
+		],
+		"system": [
+			{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.63"},
+			{"type": "text", "text": "Keep this instruction"}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", inputJSON, false)
+	outputStr := string(output)
+
+	sysInstruction := gjson.Get(outputStr, "request.systemInstruction")
+	if !sysInstruction.Exists() {
+		t.Fatal("systemInstruction should exist")
+	}
+	parts := sysInstruction.Get("parts").Array()
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 system instruction part after filtering, got %d", len(parts))
+	}
+	if got := parts[0].Get("text").String(); got != "Keep this instruction" {
+		t.Fatalf("system instruction text = %q, want %q", got, "Keep this instruction")
+	}
+}
+
 func TestConvertClaudeRequestToAntigravity_RoleMapping(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "claude-3-5-sonnet-20240620",
