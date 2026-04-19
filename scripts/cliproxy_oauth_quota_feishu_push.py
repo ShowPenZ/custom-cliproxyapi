@@ -140,22 +140,144 @@ def build_payload(raw_rows: list[dict], plan_prefix: str) -> list[dict[str, obje
     return rows
 
 
+def format_percent(value: object) -> str:
+    if isinstance(value, int):
+        return f"{value}%"
+    text = str(value).strip()
+    if text in {"", "-"}:
+        return "-"
+    return text if text.endswith("%") else f"{text}%"
+
+
+def escape_lark_md(value: object) -> str:
+    text = str(value).replace("\\", "\\\\").replace("`", "\\`").strip()
+    return text or "-"
+
+
 def build_message(title: str, payload: list[dict[str, object]]) -> str:
     pushed_at = datetime.now(UTC_PLUS_8).isoformat(timespec="seconds")
-    body = json.dumps(payload, ensure_ascii=False, indent=2)
-    return f"{title}\n推送时间: {pushed_at}\n调度: UTC+8 10:00-23:00 每3小时一次\n\n{body}"
+    lines = [
+        f"# {title}",
+        "",
+        f"- 推送时间：`{pushed_at}`",
+        "- 调度：`UTC+8 10:00-23:00 每3小时一次`",
+        f"- 账户数：`{len(payload)}`",
+    ]
+    for index, row in enumerate(payload, start=1):
+        lines.extend(
+            [
+                "",
+                f"## {index}. {escape_lark_md(row.get('account', '-'))}",
+                f"- 状态：`{escape_lark_md(row.get('state', '-'))}`",
+                f"- 会员到期：`{escape_lark_md(row.get('会员到期时间', '-'))}`",
+                f"- 5小时额度剩余：`{escape_lark_md(format_percent(row.get('5小时额度剩余', '-')))}`",
+                f"- 5小时额度重置：`{escape_lark_md(row.get('5小时额度重置时间', '-'))}`",
+                f"- 周额度剩余：`{escape_lark_md(format_percent(row.get('周额度剩余', '-')))}`",
+                f"- 周额度重置：`{escape_lark_md(row.get('周额度重置时间', '-'))}`",
+            ]
+        )
+    return "\n".join(lines)
 
 
-def send_feishu(webhook_url: str, message: str) -> dict:
-    data = json.dumps(
+def build_feishu_card(title: str, payload: list[dict[str, object]]) -> dict[str, object]:
+    pushed_at = datetime.now(UTC_PLUS_8).isoformat(timespec="seconds")
+    elements: list[dict[str, object]] = [
         {
-            "msg_type": "text",
-            "content": {
-                "text": message,
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**推送时间**：`{escape_lark_md(pushed_at)}`\n"
+                    "**调度**：`UTC+8 10:00-23:00 每3小时一次`\n"
+                    f"**账户数**：`{len(payload)}`"
+                ),
             },
         },
-        ensure_ascii=False,
-    ).encode("utf-8")
+        {"tag": "hr"},
+    ]
+    for index, row in enumerate(payload, start=1):
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"**{index}. {escape_lark_md(row.get('account', '-'))}**",
+                },
+            }
+        )
+        elements.append(
+            {
+                "tag": "div",
+                "fields": [
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**状态**\n`{escape_lark_md(row.get('state', '-'))}`",
+                        },
+                    },
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**会员到期**\n`{escape_lark_md(row.get('会员到期时间', '-'))}`",
+                        },
+                    },
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**5小时额度剩余**\n`{escape_lark_md(format_percent(row.get('5小时额度剩余', '-')))}`",
+                        },
+                    },
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**5小时额度重置**\n`{escape_lark_md(row.get('5小时额度重置时间', '-'))}`",
+                        },
+                    },
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**周额度剩余**\n`{escape_lark_md(format_percent(row.get('周额度剩余', '-')))}`",
+                        },
+                    },
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**周额度重置**\n`{escape_lark_md(row.get('周额度重置时间', '-'))}`",
+                        },
+                    },
+                ],
+            }
+        )
+        if index != len(payload):
+            elements.append({"tag": "hr"})
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": True,
+            },
+            "header": {
+                "template": "blue",
+                "title": {
+                    "tag": "plain_text",
+                    "content": title,
+                },
+            },
+            "elements": elements,
+        },
+    }
+
+
+def send_feishu(webhook_url: str, body: dict[str, object]) -> dict:
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         webhook_url,
         data=data,
@@ -199,6 +321,7 @@ def main() -> int:
         return 0
 
     message = build_message(args.title, payload)
+    card = build_feishu_card(args.title, payload)
     if args.print_only:
         print(message)
         return 0
@@ -207,7 +330,7 @@ def main() -> int:
     if not webhook_url:
         fail("webhook URL is required; pass --webhook-url or set CLIPROXY_FEISHU_WEBHOOK")
 
-    response = send_feishu(webhook_url, message)
+    response = send_feishu(webhook_url, card)
     check_feishu_response(response)
     print(json.dumps(response, ensure_ascii=False))
     return 0

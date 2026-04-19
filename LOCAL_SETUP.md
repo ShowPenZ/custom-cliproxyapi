@@ -199,7 +199,8 @@ CLIPROXY_FEISHU_PLAN_PREFIX='pro' \
 ./scripts/cliproxy-oauth-quota-feishu-push
 ```
 
-The pushed per-account payload is remapped to:
+The Feishu message is sent as an interactive card rendered with Feishu markdown (`lark_md`).
+Each account is shown as a separate section with these remapped fields:
 
 - `account`
 - `state`
