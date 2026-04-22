@@ -1,6 +1,7 @@
 package synthesizer
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,33 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
+
+func buildCodexSynthTestJWT(t *testing.T, email, planType, accountID string) string {
+	t.Helper()
+
+	headerJSON, err := json.Marshal(map[string]any{
+		"alg": "RS256",
+		"typ": "JWT",
+	})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	payloadJSON, err := json.Marshal(map[string]any{
+		"email": email,
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  planType,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	encode := func(raw []byte) string {
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	return encode(headerJSON) + "." + encode(payloadJSON) + ".signature"
+}
 
 func TestNewFileSynthesizer(t *testing.T) {
 	synth := NewFileSynthesizer()
@@ -155,6 +183,43 @@ func TestFileSynthesizer_Synthesize_ExplicitAccountGroup(t *testing.T) {
 	}
 	if got := auths[0].Attributes["account_group"]; got != "pro-only" {
 		t.Fatalf("account_group = %q, want %q", got, "pro-only")
+	}
+}
+
+func TestFileSynthesizer_Synthesize_CodexProliteMapsToProGroup(t *testing.T) {
+	tempDir := t.TempDir()
+
+	authData := map[string]any{
+		"type":     "codex",
+		"email":    "prolite@example.com",
+		"id_token": buildCodexSynthTestJWT(t, "prolite@example.com", "prolite", "acct_prolite"),
+	}
+	data, _ := json.Marshal(authData)
+	err := os.WriteFile(filepath.Join(tempDir, "codex-prolite.json"), data, 0644)
+	if err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	if got := auths[0].Attributes["plan_type"]; got != "prolite" {
+		t.Fatalf("plan_type = %q, want %q", got, "prolite")
+	}
+	if got := auths[0].Attributes["account_group"]; got != "pro" {
+		t.Fatalf("account_group = %q, want %q", got, "pro")
 	}
 }
 

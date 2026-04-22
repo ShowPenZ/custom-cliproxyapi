@@ -52,7 +52,7 @@ func AccountGroupFromPlanType(planType string) string {
 	switch {
 	case normalized == "", normalized == "unknown":
 		return ""
-	case normalized == "pro", strings.HasSuffix(normalized, "-pro"):
+	case normalized == "pro", normalized == "prolite", strings.HasSuffix(normalized, "-pro"):
 		return "pro"
 	case normalized == "plus", strings.HasSuffix(normalized, "-plus"):
 		return "plus"

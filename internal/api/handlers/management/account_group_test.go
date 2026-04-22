@@ -67,6 +67,33 @@ func TestBuildAuthFileEntry_DerivesCodexAccountGroup(t *testing.T) {
 	}
 }
 
+func TestBuildAuthFileEntry_DerivesCodexAccountGroupFromProlite(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-prolite.json",
+		Provider: "codex",
+		FileName: "codex-prolite.json",
+		Metadata: map[string]any{
+			"email":    "prolite@example.com",
+			"id_token": buildCodexAccountGroupTestJWT(t, "prolite@example.com", "prolite", "acct_prolite"),
+		},
+		Attributes: map[string]string{
+			"path": "/tmp/codex-prolite.json",
+		},
+		Status: coreauth.StatusActive,
+	}
+
+	entry := (&Handler{}).buildAuthFileEntry(auth)
+	if got := entry["plan_type"]; got != "prolite" {
+		t.Fatalf("plan_type = %v, want prolite", got)
+	}
+	if got := entry["account_group"]; got != "pro" {
+		t.Fatalf("account_group = %v, want pro", got)
+	}
+	if got := entry["account_group_label"]; got != "Codex Pro" {
+		t.Fatalf("account_group_label = %v, want Codex Pro", got)
+	}
+}
+
 func TestBuildRuntimeAuthEntry_UsesExplicitAccountGroup(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID:       "codex-custom.json",
