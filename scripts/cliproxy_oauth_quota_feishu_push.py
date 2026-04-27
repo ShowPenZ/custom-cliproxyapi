@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_PROBE_TIMEOUT,
         help=f"timeout in seconds for each live quota probe (default: {DEFAULT_PROBE_TIMEOUT})",
     )
+    parser.add_argument(
+        "--skip-empty",
+        action="store_true",
+        help="exit successfully when no accounts match the current plan filter",
+    )
     parser.add_argument("--print-only", action="store_true", help="print the message body without sending it")
     parser.add_argument("--json-only", action="store_true", help="print transformed JSON only")
     return parser.parse_args()
@@ -138,6 +143,12 @@ def build_payload(raw_rows: list[dict], plan_prefix: str) -> list[dict[str, obje
     ]
     rows.sort(key=lambda item: str(item.get("account", "")).lower())
     return rows
+
+
+def empty_payload_message(plan_prefix: str) -> str:
+    if plan_prefix:
+        return f"no Codex OAuth upstream accounts matched plan prefix: {plan_prefix}"
+    return "no Codex OAuth upstream accounts found in oauth-quota output"
 
 
 def format_percent(value: object) -> str:
@@ -312,9 +323,14 @@ def main() -> int:
     raw_rows = fetch_raw_rows(args.probe_model, args.probe_timeout)
     payload = build_payload(raw_rows, args.plan_prefix)
     if not payload:
-        if args.plan_prefix:
-            fail(f"no Codex OAuth upstream accounts matched plan prefix: {args.plan_prefix}")
-        fail("no Codex OAuth upstream accounts found in oauth-quota output")
+        message = empty_payload_message(args.plan_prefix)
+        if args.skip_empty:
+            if args.json_only:
+                print("[]")
+            else:
+                print(f"SKIP: {message}")
+            return 0
+        fail(message)
 
     if args.json_only:
         print(json.dumps(payload, ensure_ascii=False, indent=2))

@@ -199,6 +199,14 @@ CLIPROXY_FEISHU_PLAN_PREFIX='pro' \
 ./scripts/cliproxy-oauth-quota-feishu-push
 ```
 
+When a specific plan group is temporarily empty, add `--skip-empty` so the command exits successfully instead of failing:
+
+```bash
+CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx' \
+CLIPROXY_FEISHU_PLAN_PREFIX='plus' \
+./scripts/cliproxy-oauth-quota-feishu-push --skip-empty
+```
+
 The Feishu message is sent as an interactive card rendered with Feishu markdown (`lark_md`).
 Each account is shown as a separate section with these remapped fields:
 
@@ -217,6 +225,21 @@ Cron example for UTC+8 `10:00`, `13:00`, `16:00`, `19:00`, `22:00`:
 ```cron
 0 * * * * cd /opt/cliproxyapi && CLIPROXY_FEISHU_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/xxxxx' CLIPROXY_FEISHU_PLAN_PREFIX='pro' ./scripts/cliproxy-oauth-quota-feishu-cron >> /var/log/cliproxy-oauth-quota-feishu.log 2>&1
 ```
+
+If `plus` and `pro` / `prolite` need to be pushed to different Feishu groups, the cron wrapper can fan out automatically:
+
+```cron
+0 * * * * cd /opt/cliproxyapi && CLIPROXY_FEISHU_PRO_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/pro-group' CLIPROXY_FEISHU_PRO_TITLE='Codex OAuth Pro/Prolite 上游额度推送' CLIPROXY_FEISHU_PLUS_WEBHOOK='https://open.larksuite.com/open-apis/bot/v2/hook/plus-group' CLIPROXY_FEISHU_PLUS_TITLE='Codex OAuth Plus 上游额度推送' ./scripts/cliproxy-oauth-quota-feishu-cron >> /var/log/cliproxy-oauth-quota-feishu.log 2>&1
+```
+
+Multi-group cron routing variables:
+
+- `CLIPROXY_FEISHU_PRO_WEBHOOK`: webhook for plans whose `plan_type` starts with `pro` (covers `pro`, `prolite`, etc.)
+- `CLIPROXY_FEISHU_PRO_TITLE`: optional title for the Pro / Prolite message
+- `CLIPROXY_FEISHU_PRO_PLAN_PREFIX`: optional override for the Pro-side prefix filter, default `pro`
+- `CLIPROXY_FEISHU_PLUS_WEBHOOK`: webhook for plans whose `plan_type` starts with `plus`
+- `CLIPROXY_FEISHU_PLUS_TITLE`: optional title for the Plus message
+- `CLIPROXY_FEISHU_PLUS_PLAN_PREFIX`: optional override for the Plus-side prefix filter, default `plus`
 
 Remote HTTPS API for authenticated clients:
 

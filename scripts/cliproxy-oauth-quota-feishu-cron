@@ -2,10 +2,48 @@
 set -euo pipefail
 
 shanghai_hour="$(TZ=Asia/Shanghai date +%H)"
+push_cmd="/opt/cliproxyapi/scripts/cliproxy-oauth-quota-feishu-push"
+extra_args=("$@")
+
+push_route() {
+  local webhook="$1"
+  local title="$2"
+  local prefix="$3"
+
+  if [[ -z "$webhook" ]]; then
+    return 0
+  fi
+
+  local args=(
+    --webhook-url "$webhook"
+    --plan-prefix "$prefix"
+    --skip-empty
+  )
+
+  if [[ -n "$title" ]]; then
+    args+=(--title "$title")
+  fi
+
+  "$push_cmd" "${args[@]}" "${extra_args[@]}"
+}
 
 case "$shanghai_hour" in
   10|13|16|19|22)
-    exec /opt/cliproxyapi/scripts/cliproxy-oauth-quota-feishu-push "$@"
+    if [[ -n "${CLIPROXY_FEISHU_PRO_WEBHOOK:-}" || -n "${CLIPROXY_FEISHU_PLUS_WEBHOOK:-}" ]]; then
+      push_route \
+        "${CLIPROXY_FEISHU_PRO_WEBHOOK:-}" \
+        "${CLIPROXY_FEISHU_PRO_TITLE:-Codex OAuth Pro 系列上游额度推送}" \
+        "${CLIPROXY_FEISHU_PRO_PLAN_PREFIX:-pro}"
+
+      push_route \
+        "${CLIPROXY_FEISHU_PLUS_WEBHOOK:-}" \
+        "${CLIPROXY_FEISHU_PLUS_TITLE:-Codex OAuth Plus 上游额度推送}" \
+        "${CLIPROXY_FEISHU_PLUS_PLAN_PREFIX:-plus}"
+
+      exit 0
+    fi
+
+    exec "$push_cmd" "$@"
     ;;
   *)
     exit 0
