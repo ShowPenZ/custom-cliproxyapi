@@ -173,6 +173,32 @@ func TestSchedulerPick_CodexRequestedAccountGroupHonored(t *testing.T) {
 	}
 }
 
+func TestSchedulerPick_CodexDeniedAccountGroupHonored(t *testing.T) {
+	t.Parallel()
+
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		&Auth{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"account_group": "plus"}},
+		&Auth{ID: "codex-pro20x", Provider: "codex", Attributes: map[string]string{"account_group": "pro20x"}},
+	)
+
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.CodexDeniedAccountGroupsMetadataKey: []string{"pro20x"},
+		},
+	}
+	got, errPick := scheduler.pickSingle(context.Background(), "codex", "", opts, nil, scheduler.strategy)
+	if errPick != nil {
+		t.Fatalf("pickSingle() error = %v", errPick)
+	}
+	if got == nil {
+		t.Fatal("pickSingle() auth = nil")
+	}
+	if got.ID != "codex-plus" {
+		t.Fatalf("pickSingle() auth.ID = %q, want %q", got.ID, "codex-plus")
+	}
+}
+
 func TestSchedulerPick_ProviderOverrideUsesRoundRobin(t *testing.T) {
 	t.Parallel()
 

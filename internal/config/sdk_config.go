@@ -36,6 +36,11 @@ type SDKConfig struct {
 	// codex_account_group / account_group query parameter.
 	CodexProAPIKeys []string `yaml:"codex-pro-api-keys,omitempty" json:"codex-pro-api-keys,omitempty"`
 
+	// CodexPro20xAPIKeys whitelists client API keys that may use Codex auths in the "pro20x" account group.
+	// When this list is non-empty, client keys not listed here are prevented from selecting Codex
+	// auth entries whose account_group resolves to "pro20x".
+	CodexPro20xAPIKeys []string `yaml:"codex-pro20x-api-keys,omitempty" json:"codex-pro20x-api-keys,omitempty"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`

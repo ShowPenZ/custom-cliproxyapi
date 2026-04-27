@@ -236,6 +236,11 @@ func requestScopedMetadataFromGin(c *gin.Context) map[string]any {
 			meta[coreexecutor.CodexAllowProMetadataKey] = allow
 		}
 	}
+	if value, exists := c.Get("codexDeniedAccountGroups"); exists {
+		if groups := normalizeMetadataStringSlice(value); len(groups) > 0 {
+			meta[coreexecutor.CodexDeniedAccountGroupsMetadataKey] = groups
+		}
+	}
 	if len(meta) == 0 {
 		return nil
 	}
@@ -268,6 +273,38 @@ func normalizeMetadataBool(value any) (bool, bool) {
 		return normalizeMetadataBool(string(v))
 	}
 	return false, false
+}
+
+func normalizeMetadataStringSlice(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if trimmed := strings.ToLower(strings.TrimSpace(item)); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if trimmed := normalizeMetadataString(item); trimmed != "" {
+				out = append(out, strings.ToLower(trimmed))
+			}
+		}
+		return out
+	case string:
+		parts := strings.Split(v, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if trimmed := strings.ToLower(strings.TrimSpace(part)); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {

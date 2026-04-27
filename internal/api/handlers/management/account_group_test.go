@@ -113,11 +113,11 @@ func TestBuildAuthFileEntry_DerivesCodexAccountGroupFromPro20x(t *testing.T) {
 	if got := entry["plan_type"]; got != "pro 20x" {
 		t.Fatalf("plan_type = %v, want pro 20x", got)
 	}
-	if got := entry["account_group"]; got != "pro" {
-		t.Fatalf("account_group = %v, want pro", got)
+	if got := entry["account_group"]; got != "pro20x" {
+		t.Fatalf("account_group = %v, want pro20x", got)
 	}
-	if got := entry["account_group_label"]; got != "Codex Pro" {
-		t.Fatalf("account_group_label = %v, want Codex Pro", got)
+	if got := entry["account_group_label"]; got != "Codex Pro 20x" {
+		t.Fatalf("account_group_label = %v, want Codex Pro 20x", got)
 	}
 }
 

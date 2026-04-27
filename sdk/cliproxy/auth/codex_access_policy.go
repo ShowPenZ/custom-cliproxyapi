@@ -60,6 +60,45 @@ func CodexAllowProFromMetadata(meta map[string]any) bool {
 	return true
 }
 
+// CodexDeniedAccountGroupsFromMetadata returns request-scoped Codex groups that must be excluded.
+func CodexDeniedAccountGroupsFromMetadata(meta map[string]any) map[string]struct{} {
+	denied := make(map[string]struct{})
+	if len(meta) == 0 {
+		return denied
+	}
+	raw, ok := meta[cliproxyexecutor.CodexDeniedAccountGroupsMetadataKey]
+	if !ok || raw == nil {
+		return denied
+	}
+	add := func(value string) {
+		for _, part := range strings.Split(value, ",") {
+			if group := strings.ToLower(strings.TrimSpace(part)); group != "" {
+				denied[group] = struct{}{}
+			}
+		}
+	}
+	switch v := raw.(type) {
+	case string:
+		add(v)
+	case []byte:
+		add(string(v))
+	case []string:
+		for _, item := range v {
+			add(item)
+		}
+	case []any:
+		for _, item := range v {
+			switch typed := item.(type) {
+			case string:
+				add(typed)
+			case []byte:
+				add(string(typed))
+			}
+		}
+	}
+	return denied
+}
+
 // AuthAllowedForMetadata applies request-scoped account-group policy to an auth entry.
 func AuthAllowedForMetadata(auth *Auth, meta map[string]any) bool {
 	if auth == nil {
@@ -71,6 +110,9 @@ func AuthAllowedForMetadata(auth *Auth, meta map[string]any) bool {
 
 	group := AuthAccountGroup(auth)
 	if strings.EqualFold(group, "pro") && !CodexAllowProFromMetadata(meta) {
+		return false
+	}
+	if _, denied := CodexDeniedAccountGroupsFromMetadata(meta)[strings.ToLower(strings.TrimSpace(group))]; denied {
 		return false
 	}
 

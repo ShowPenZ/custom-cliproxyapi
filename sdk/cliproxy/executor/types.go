@@ -23,6 +23,8 @@ const (
 	RequestedAccountGroupMetadataKey = "requested_account_group"
 	// CodexAllowProMetadataKey indicates whether the downstream client may use Codex "pro" auths.
 	CodexAllowProMetadataKey = "codex_allow_pro"
+	// CodexDeniedAccountGroupsMetadataKey lists Codex account groups this request may not use.
+	CodexDeniedAccountGroupsMetadataKey = "codex_denied_account_groups"
 )
 
 // Request encapsulates the translated payload that will be sent to a provider executor.

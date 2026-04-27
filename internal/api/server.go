@@ -1132,7 +1132,16 @@ func (s *Server) codexGroupAccessMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestedGroup := requestedAccountGroupFromRequest(c.Request)
 
-		if s == nil || s.cfg == nil || len(s.cfg.CodexProAPIKeys) == 0 {
+		if s == nil || s.cfg == nil {
+			if requestedGroup != "" {
+				c.Set("requestedAccountGroup", requestedGroup)
+			}
+			c.Next()
+			return
+		}
+
+		protectedGroups := s.protectedCodexAccountGroups()
+		if len(protectedGroups) == 0 {
 			if requestedGroup != "" {
 				c.Set("requestedAccountGroup", requestedGroup)
 			}
@@ -1145,6 +1154,8 @@ func (s *Server) codexGroupAccessMiddleware() gin.HandlerFunc {
 			if requestedGroup != "" {
 				c.Set("requestedAccountGroup", requestedGroup)
 			}
+			c.Set("codexDeniedAccountGroups", protectedGroups)
+			c.Set("codexAllowPro", !containsStringFold(protectedGroups, "pro"))
 			c.Next()
 			return
 		}
@@ -1153,34 +1164,68 @@ func (s *Server) codexGroupAccessMiddleware() gin.HandlerFunc {
 			if requestedGroup != "" {
 				c.Set("requestedAccountGroup", requestedGroup)
 			}
+			c.Set("codexDeniedAccountGroups", protectedGroups)
+			c.Set("codexAllowPro", !containsStringFold(protectedGroups, "pro"))
 			c.Next()
 			return
 		}
 
-		allowPro := containsStringExact(s.cfg.CodexProAPIKeys, apiKey)
-		c.Set("codexAllowPro", allowPro)
-		if allowPro {
+		allowedGroups := s.allowedCodexAccountGroups(apiKey)
+		if len(allowedGroups) > 0 {
 			if requestedGroup == "" {
-				requestedGroup = "pro"
-			} else if !strings.EqualFold(requestedGroup, "pro") {
+				if len(allowedGroups) == 1 {
+					requestedGroup = allowedGroups[0]
+				}
+			} else if !containsStringFold(allowedGroups, requestedGroup) {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-					"error": "access denied: API key is restricted to Codex pro account group",
+					"error": "access denied: API key is restricted to Codex " + strings.Join(allowedGroups, "/") + " account group",
 				})
 				return
 			}
 		}
+		deniedGroups := differenceStringFold(protectedGroups, allowedGroups)
+		c.Set("codexDeniedAccountGroups", deniedGroups)
+		c.Set("codexAllowPro", !containsStringFold(deniedGroups, "pro"))
 		if requestedGroup != "" {
 			c.Set("requestedAccountGroup", requestedGroup)
 		}
-		if strings.EqualFold(requestedGroup, "pro") && !allowPro {
+		if requestedGroup != "" && containsStringFold(deniedGroups, requestedGroup) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "access denied: API key is not allowed to request Codex pro account group",
+				"error": "access denied: API key is not allowed to request Codex " + requestedGroup + " account group",
 			})
 			return
 		}
 
 		c.Next()
 	}
+}
+
+func (s *Server) protectedCodexAccountGroups() []string {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	groups := make([]string, 0, 2)
+	if len(s.cfg.CodexProAPIKeys) > 0 {
+		groups = append(groups, "pro")
+	}
+	if len(s.cfg.CodexPro20xAPIKeys) > 0 {
+		groups = append(groups, "pro20x")
+	}
+	return groups
+}
+
+func (s *Server) allowedCodexAccountGroups(apiKey string) []string {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	groups := make([]string, 0, 2)
+	if containsStringExact(s.cfg.CodexProAPIKeys, apiKey) {
+		groups = append(groups, "pro")
+	}
+	if containsStringExact(s.cfg.CodexPro20xAPIKeys, apiKey) {
+		groups = append(groups, "pro20x")
+	}
+	return groups
 }
 
 func requestedAccountGroupFromRequest(r *http.Request) string {
@@ -1201,6 +1246,31 @@ func requestedAccountGroupFromRequest(r *http.Request) string {
 		}
 	}
 	return ""
+}
+
+func containsStringFold(values []string, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	if needle == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func differenceStringFold(values, exclude []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" || containsStringFold(exclude, normalized) {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	return out
 }
 
 func isAllowedClaudeOnlyRequest(r *http.Request) bool {

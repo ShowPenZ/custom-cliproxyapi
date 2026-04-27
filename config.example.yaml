@@ -64,6 +64,11 @@ api-keys:
 # codex-pro-api-keys:
 #   - "sk-team-codex-pro-1"
 
+# Optional: restrict access to Codex auths in the separate `pro20x` account group.
+# This is intentionally isolated from the regular `pro` group.
+# codex-pro20x-api-keys:
+#   - "sk-team-codex-pro20x-1"
+
 # Enable debug logging
 debug: false
 

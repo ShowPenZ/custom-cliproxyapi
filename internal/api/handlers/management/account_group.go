@@ -77,6 +77,8 @@ func accountGroupLabel(provider, group string) string {
 		switch strings.ToLower(group) {
 		case "pro":
 			return "Codex Pro"
+		case "pro20x":
+			return "Codex Pro 20x"
 		case "plus":
 			return "Codex Plus"
 		case "team":

@@ -12,9 +12,9 @@ func TestAccountGroupFromPlanType(t *testing.T) {
 	}{
 		{name: "pro", planType: "pro", want: "pro"},
 		{name: "prolite", planType: "prolite", want: "pro"},
-		{name: "pro 20x", planType: "pro 20x", want: "pro"},
-		{name: "pro_20x", planType: "pro_20x", want: "pro"},
-		{name: "pro20x", planType: "pro20x", want: "pro"},
+		{name: "pro 20x", planType: "pro 20x", want: "pro20x"},
+		{name: "pro_20x", planType: "pro_20x", want: "pro20x"},
+		{name: "pro20x", planType: "pro20x", want: "pro20x"},
 		{name: "plus", planType: "plus", want: "plus"},
 		{name: "team", planType: "team", want: "team"},
 		{name: "unknown stays empty", planType: "unknown", want: ""},
