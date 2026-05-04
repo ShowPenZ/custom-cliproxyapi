@@ -9,6 +9,7 @@ push_route() {
   local webhook="$1"
   local title="$2"
   local prefix="$3"
+  local account_group="$4"
 
   if [[ -z "$webhook" ]]; then
     return 0
@@ -16,9 +17,14 @@ push_route() {
 
   local args=(
     --webhook-url "$webhook"
-    --plan-prefix "$prefix"
     --skip-empty
   )
+  if [[ -n "$prefix" ]]; then
+    args+=(--plan-prefix "$prefix")
+  fi
+  if [[ -n "$account_group" ]]; then
+    args+=(--account-group "$account_group")
+  fi
 
   if [[ -n "$title" ]]; then
     args+=(--title "$title")
@@ -29,16 +35,24 @@ push_route() {
 
 case "$shanghai_hour" in
   10|13|16|19|22)
-    if [[ -n "${CLIPROXY_FEISHU_PRO_WEBHOOK:-}" || -n "${CLIPROXY_FEISHU_PLUS_WEBHOOK:-}" ]]; then
+    if [[ -n "${CLIPROXY_FEISHU_PRO_WEBHOOK:-}" || -n "${CLIPROXY_FEISHU_PLUS_WEBHOOK:-}" || -n "${CLIPROXY_FEISHU_PRO20X_WEBHOOK:-}" ]]; then
+      push_route \
+        "${CLIPROXY_FEISHU_PRO20X_WEBHOOK:-}" \
+        "${CLIPROXY_FEISHU_PRO20X_TITLE:-Codex OAuth Pro 20x 上游额度推送}" \
+        "" \
+        "${CLIPROXY_FEISHU_PRO20X_ACCOUNT_GROUP:-pro20x}"
+
       push_route \
         "${CLIPROXY_FEISHU_PRO_WEBHOOK:-}" \
         "${CLIPROXY_FEISHU_PRO_TITLE:-Codex OAuth Pro 系列上游额度推送}" \
-        "${CLIPROXY_FEISHU_PRO_PLAN_PREFIX:-pro}"
+        "${CLIPROXY_FEISHU_PRO_PLAN_PREFIX:-pro}" \
+        "${CLIPROXY_FEISHU_PRO_ACCOUNT_GROUP:-pro}"
 
       push_route \
         "${CLIPROXY_FEISHU_PLUS_WEBHOOK:-}" \
         "${CLIPROXY_FEISHU_PLUS_TITLE:-Codex OAuth Plus 上游额度推送}" \
-        "${CLIPROXY_FEISHU_PLUS_PLAN_PREFIX:-plus}"
+        "${CLIPROXY_FEISHU_PLUS_PLAN_PREFIX:-plus}" \
+        "${CLIPROXY_FEISHU_PLUS_ACCOUNT_GROUP:-plus}"
 
       exit 0
     fi

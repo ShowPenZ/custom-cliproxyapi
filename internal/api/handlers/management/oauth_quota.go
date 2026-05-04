@@ -41,6 +41,7 @@ type oauthQuotaAccountEntry struct {
 	Account                 string     `json:"account"`
 	State                   string     `json:"state"`
 	PlanType                string     `json:"plan_type,omitempty"`
+	AccountGroup            string     `json:"account_group,omitempty"`
 	SubscriptionActiveUntil *time.Time `json:"subscription_active_until,omitempty"`
 	AuthID                  string     `json:"auth_id,omitempty"`
 	PrimaryUsedPercent      *int       `json:"primary_used_percent,omitempty"`
@@ -162,6 +163,9 @@ func (h *Handler) collectOAuthQuotaRows(ctx context.Context, probe, forceRefresh
 		snapshot := codexSubscriptionSnapshotFromAuth(auth)
 		row.PlanType = snapshot.planType
 		row.SubscriptionActiveUntil = snapshot.subscriptionActiveUntil
+		if group, _ := authAccountGroup(auth); group != "" {
+			row.AccountGroup = group
+		}
 
 		if probe {
 			h.applyOAuthProbe(ctx, auth, &row, model, timeout)

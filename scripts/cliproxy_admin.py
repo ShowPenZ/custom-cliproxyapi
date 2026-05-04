@@ -211,6 +211,7 @@ def blank_oauth_quota_row(account: str) -> dict[str, Any]:
         "account": account,
         "state": "-",
         "plan_type": "-",
+        "account_group": "-",
         "subscription_active_until": "-",
         "last_seen": "-",
         "auth_id": "-",
@@ -328,6 +329,9 @@ def collect_oauth_quota_rows(log_dir: str) -> list[dict[str, Any]]:
         runtime_plan = str(entry.get("plan_type", "")).strip()
         if runtime_plan:
             row["plan_type"] = runtime_plan
+        runtime_group = str(entry.get("account_group", "")).strip()
+        if runtime_group:
+            row["account_group"] = runtime_group
         runtime_subscription_until = str(entry.get("subscription_active_until", "")).strip()
         if runtime_subscription_until:
             row["subscription_active_until"] = normalise_iso_in_timezone(runtime_subscription_until, UTC_PLUS_8)
@@ -398,6 +402,10 @@ def merge_oauth_auth_file_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
             plan_type = str(entry.get("id_token", {}).get("plan_type", "")).strip()
             if plan_type:
                 row["plan_type"] = plan_type
+        if str(row.get("account_group", "")).strip() in {"", "-"}:
+            account_group = str(entry.get("account_group", "")).strip()
+            if account_group:
+                row["account_group"] = account_group
         if str(row.get("subscription_active_until", "")).strip() in {"", "-"}:
             subscription_until = str(entry.get("id_token", {}).get("chatgpt_subscription_active_until", "")).strip()
             if subscription_until:
@@ -710,6 +718,7 @@ def normalise_management_oauth_quota_row(entry: dict[str, Any]) -> dict[str, Any
     row["account"] = account
     row["state"] = scalar_or_dash(entry.get("state"))
     row["plan_type"] = scalar_or_dash(entry.get("plan_type"))
+    row["account_group"] = scalar_or_dash(entry.get("account_group"))
 
     subscription_until = str(entry.get("subscription_active_until", "")).strip()
     if subscription_until:
