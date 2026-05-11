@@ -68,6 +68,12 @@ func main() {
 	var oauthCallbackPort int
 	var antigravityLogin bool
 	var kimiLogin bool
+	var kiroCLILogin bool
+	var kiroImport bool
+	var kiroIDCLogin bool
+	var kiroIDCStartURL string
+	var kiroIDCRegion string
+	var kiroIDCFlow string
 	var projectID string
 	var vertexImport string
 	var configPath string
@@ -88,6 +94,12 @@ func main() {
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
+	flag.BoolVar(&kiroCLILogin, "kiro-cli-login", false, "Login to Kiro using native Kiro CLI OAuth")
+	flag.BoolVar(&kiroImport, "kiro-import", false, "Import Kiro IDE token from the default local token file")
+	flag.BoolVar(&kiroIDCLogin, "kiro-idc-login", false, "Login to Kiro using AWS Identity Center")
+	flag.StringVar(&kiroIDCStartURL, "kiro-idc-start-url", "", "AWS Identity Center start URL for Kiro login")
+	flag.StringVar(&kiroIDCRegion, "kiro-idc-region", "", "AWS Identity Center OIDC region for Kiro login")
+	flag.StringVar(&kiroIDCFlow, "kiro-idc-flow", "", "Kiro IDC login flow, use 'device' for device-code flow")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
@@ -486,6 +498,12 @@ func main() {
 		cmd.DoIFlowCookieAuth(cfg, options)
 	} else if kimiLogin {
 		cmd.DoKimiLogin(cfg, options)
+	} else if kiroCLILogin {
+		cmd.DoKiroCLILogin(cfg, options)
+	} else if kiroImport {
+		cmd.DoKiroImport(cfg, options)
+	} else if kiroIDCLogin {
+		cmd.DoKiroIDCLogin(cfg, options, kiroIDCStartURL, kiroIDCRegion, kiroIDCFlow)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {

@@ -27,6 +27,29 @@ func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 	assertGPT55ModelInfo(t, "lookup", model)
 }
 
+func TestKiroStaticModels(t *testing.T) {
+	models := GetKiroModels()
+	if len(models) == 0 {
+		t.Fatal("expected Kiro static models")
+	}
+	if findModelInfo(models, "kiro-auto") == nil {
+		t.Fatal("expected Kiro models to include kiro-auto")
+	}
+	if findModelInfo(models, "kiro-claude-sonnet-4-5-agentic") == nil {
+		t.Fatal("expected Kiro models to include agentic Sonnet variant")
+	}
+	if findModelInfo(GetStaticModelDefinitionsByChannel("kiro"), "kiro-claude-opus-4-5") == nil {
+		t.Fatal("expected static channel lookup to include Kiro Opus")
+	}
+	model := LookupStaticModelInfo("kiro-claude-haiku-4-5")
+	if model == nil {
+		t.Fatal("expected LookupStaticModelInfo to find Kiro Haiku")
+	}
+	if model.OwnedBy != "kiro" || model.Type != "kiro" {
+		t.Fatalf("unexpected Kiro model metadata: owned_by=%q type=%q", model.OwnedBy, model.Type)
+	}
+}
+
 func findModelInfo(models []*ModelInfo, id string) *ModelInfo {
 	for _, model := range models {
 		if model != nil && model.ID == id {

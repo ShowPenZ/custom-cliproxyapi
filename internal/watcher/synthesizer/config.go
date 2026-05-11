@@ -31,12 +31,85 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeClaudeKeys(ctx)...)
 	// Codex API Keys
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
+	// Kiro config-backed auth entries
+	out = append(out, s.synthesizeKiroAuths(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
 
 	return out, nil
+}
+
+// synthesizeKiroAuths creates Auth entries for config-backed Kiro OAuth/file tokens.
+func (s *ConfigSynthesizer) synthesizeKiroAuths(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.Kiro.Auths))
+	for i := range cfg.Kiro.Auths {
+		entry := cfg.Kiro.Auths[i]
+		accessToken := strings.TrimSpace(entry.AccessToken)
+		refreshToken := strings.TrimSpace(entry.RefreshToken)
+		email := strings.TrimSpace(entry.Email)
+		profileARN := strings.TrimSpace(entry.ProfileARN)
+		if accessToken == "" && refreshToken == "" && email == "" && profileARN == "" {
+			continue
+		}
+		prefix := strings.TrimSpace(entry.Prefix)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		region := strings.TrimSpace(entry.Region)
+		startURL := strings.TrimSpace(entry.StartURL)
+		preferredEndpoint := strings.TrimSpace(entry.PreferredEndpoint)
+		if preferredEndpoint == "" {
+			preferredEndpoint = strings.TrimSpace(cfg.Kiro.PreferredEndpoint)
+		}
+		id, token := idGen.Next("kiro:config", email, profileARN, region, startURL, accessToken, refreshToken)
+		attrs := map[string]string{
+			"source":    fmt.Sprintf("config:kiro[%s]", token),
+			"auth_kind": "oauth",
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if region != "" {
+			attrs["region"] = region
+		}
+		if preferredEndpoint != "" {
+			attrs["preferred_endpoint"] = preferredEndpoint
+		}
+		if hash := diff.ComputeKiroModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "kiro",
+			Label:      "kiro",
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			Attributes: attrs,
+			Metadata: map[string]any{
+				"type":          "kiro",
+				"access_token":  accessToken,
+				"refresh_token": refreshToken,
+				"expires_at":    strings.TrimSpace(entry.ExpiresAt),
+				"auth_method":   strings.TrimSpace(entry.AuthMethod),
+				"client_id":     strings.TrimSpace(entry.ClientID),
+				"client_secret": strings.TrimSpace(entry.ClientSecret),
+				"region":        region,
+				"start_url":     startURL,
+				"profile_arn":   profileARN,
+				"email":         email,
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "oauth")
+		out = append(out, a)
+	}
+	return out
 }
 
 // synthesizeGeminiKeys creates Auth entries for Gemini API keys.

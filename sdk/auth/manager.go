@@ -74,3 +74,22 @@ func (m *Manager) Login(ctx context.Context, provider string, cfg *config.Config
 	}
 	return record, savedPath, nil
 }
+
+// SaveAuth persists an auth record directly without running a login flow.
+func (m *Manager) SaveAuth(ctx context.Context, record *coreauth.Auth, cfg *config.Config) (string, error) {
+	if record == nil {
+		return "", fmt.Errorf("cliproxy auth: auth record is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.store == nil {
+		return "", fmt.Errorf("cliproxy auth: token store is not configured")
+	}
+	if cfg != nil {
+		if dirSetter, ok := m.store.(interface{ SetBaseDir(string) }); ok {
+			dirSetter.SetBaseDir(cfg.AuthDir)
+		}
+	}
+	return m.store.Save(ctx, record)
+}

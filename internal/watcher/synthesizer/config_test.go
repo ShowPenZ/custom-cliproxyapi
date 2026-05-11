@@ -291,6 +291,89 @@ func TestConfigSynthesizer_CodexKeys_SkipsEmptyAndHeaders(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_KiroAuths(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			Kiro: config.KiroConfig{
+				PreferredEndpoint: "amazonq",
+				Auths: []config.KiroKey{
+					{
+						Email:          "user@example.com",
+						RefreshToken:   "refresh-token",
+						Region:         "us-east-1",
+						Prefix:         "team",
+						ProxyURL:       "direct",
+						ExcludedModels: []string{"kiro-claude-opus-4-5"},
+						Models: []config.KiroModel{
+							{Name: "kiro-claude-sonnet-4-5", Alias: "kiro-sonnet"},
+						},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
+	if auth.Provider != "kiro" {
+		t.Fatalf("expected provider kiro, got %s", auth.Provider)
+	}
+	if auth.Prefix != "team" {
+		t.Fatalf("expected prefix team, got %s", auth.Prefix)
+	}
+	if auth.ProxyURL != "direct" {
+		t.Fatalf("expected proxy direct, got %s", auth.ProxyURL)
+	}
+	if auth.Attributes["auth_kind"] != "oauth" {
+		t.Fatalf("expected oauth auth_kind, got %s", auth.Attributes["auth_kind"])
+	}
+	if auth.Attributes["preferred_endpoint"] != "amazonq" {
+		t.Fatalf("expected preferred endpoint amazonq, got %s", auth.Attributes["preferred_endpoint"])
+	}
+	if _, ok := auth.Attributes["models_hash"]; !ok {
+		t.Fatal("expected models_hash in attributes")
+	}
+	if auth.Metadata["type"] != "kiro" || auth.Metadata["email"] != "user@example.com" || auth.Metadata["refresh_token"] != "refresh-token" {
+		t.Fatalf("unexpected kiro metadata: %#v", auth.Metadata)
+	}
+	if auth.Attributes["excluded_models"] != "kiro-claude-opus-4-5" {
+		t.Fatalf("expected excluded_models attribute, got %q", auth.Attributes["excluded_models"])
+	}
+}
+
+func TestConfigSynthesizer_KiroAuths_SkipsEmpty(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			Kiro: config.KiroConfig{
+				Auths: []config.KiroKey{
+					{},
+					{Email: "user@example.com"},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth (empty Kiro auth skipped), got %d", len(auths))
+	}
+}
+
 func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -112,19 +112,29 @@ type Config struct {
 	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
 
+	// Kiro contains Kiro/AWS Q Developer OAuth provider settings.
+	Kiro KiroConfig `yaml:"kiro" json:"kiro"`
+
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow.
+	// gemini-cli, vertex, aistudio, antigravity, kiro, claude, codex, qwen, iflow.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	OAuthEndpointOverrides map[string]OAuthEndpointConfig `yaml:"oauth-endpoint-overrides,omitempty" json:"oauth-endpoint-overrides,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// IncognitoBrowser enables opening OAuth URLs in incognito/private browsing mode.
+	// This is useful when logging in with a different account without logging out
+	// from the current browser session. Default: false.
+	IncognitoBrowser bool `yaml:"incognito-browser" json:"incognito-browser"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
@@ -214,6 +224,38 @@ type OAuthModelAlias struct {
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
 }
 
+type OAuthEndpointConfig struct {
+	ApiBaseURL         string `yaml:"api-base-url,omitempty" json:"api-base-url,omitempty"`
+	AuthorizeURL       string `yaml:"authorize-url,omitempty" json:"authorize-url,omitempty"`
+	TokenURL           string `yaml:"token-url,omitempty" json:"token-url,omitempty"`
+	RefreshURL         string `yaml:"refresh-url,omitempty" json:"refresh-url,omitempty"`
+	UserinfoURL        string `yaml:"userinfo-url,omitempty" json:"userinfo-url,omitempty"`
+	DeviceAuthorizeURL string `yaml:"device-authorize-url,omitempty" json:"device-authorize-url,omitempty"`
+}
+
+func (c *OAuthEndpointConfig) ApplyDefaults(defaults OAuthEndpointConfig) OAuthEndpointConfig {
+	result := *c
+	if result.ApiBaseURL == "" {
+		result.ApiBaseURL = defaults.ApiBaseURL
+	}
+	if result.AuthorizeURL == "" {
+		result.AuthorizeURL = defaults.AuthorizeURL
+	}
+	if result.TokenURL == "" {
+		result.TokenURL = defaults.TokenURL
+	}
+	if result.RefreshURL == "" {
+		result.RefreshURL = defaults.RefreshURL
+	}
+	if result.UserinfoURL == "" {
+		result.UserinfoURL = defaults.UserinfoURL
+	}
+	if result.DeviceAuthorizeURL == "" {
+		result.DeviceAuthorizeURL = defaults.DeviceAuthorizeURL
+	}
+	return result
+}
+
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
 // When Amp requests a model that isn't available locally, this mapping
 // allows routing to an alternative model that IS available.
@@ -259,6 +301,72 @@ type AmpCode struct {
 	// When false (default), local API keys are used first if available.
 	ForceModelMappings bool `yaml:"force-model-mappings" json:"force-model-mappings"`
 }
+
+// KiroConfig groups Kiro OAuth/file-auth provider settings.
+type KiroConfig struct {
+	// PreferredEndpoint selects the upstream Kiro endpoint preference.
+	// Supported values are currently "codewhisperer", "amazonq", or empty for executor default.
+	PreferredEndpoint string `yaml:"preferred-endpoint,omitempty" json:"preferred-endpoint,omitempty"`
+
+	// Fingerprint configures Kiro client identity headers used by the upstream executor.
+	Fingerprint KiroFingerprintConfig `yaml:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+
+	// Auths allows operators to seed Kiro OAuth/file auth entries from config.
+	// This is intended for imported Kiro token material; browser login is added separately.
+	Auths []KiroKey `yaml:"auths,omitempty" json:"auths,omitempty"`
+}
+
+// KiroFingerprintConfig captures optional Kiro client fingerprint header defaults.
+type KiroFingerprintConfig struct {
+	UserAgent           string `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	AmzUserAgent        string `yaml:"x-amz-user-agent,omitempty" json:"x-amz-user-agent,omitempty"`
+	AgentMode           string `yaml:"agent-mode,omitempty" json:"agent-mode,omitempty"`
+	Target              string `yaml:"target,omitempty" json:"target,omitempty"`
+	ClientID            string `yaml:"client-id,omitempty" json:"client-id,omitempty"`
+	ClientVersion       string `yaml:"client-version,omitempty" json:"client-version,omitempty"`
+	Platform            string `yaml:"platform,omitempty" json:"platform,omitempty"`
+	Runtime             string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+	DeviceID            string `yaml:"device-id,omitempty" json:"device-id,omitempty"`
+	MachineID           string `yaml:"machine-id,omitempty" json:"machine-id,omitempty"`
+	OIDCSDKVersion      string `yaml:"oidc-sdk-version,omitempty" json:"oidc-sdk-version,omitempty"`
+	RuntimeSDKVersion   string `yaml:"runtime-sdk-version,omitempty" json:"runtime-sdk-version,omitempty"`
+	StreamingSDKVersion string `yaml:"streaming-sdk-version,omitempty" json:"streaming-sdk-version,omitempty"`
+	OSType              string `yaml:"os-type,omitempty" json:"os-type,omitempty"`
+	OSVersion           string `yaml:"os-version,omitempty" json:"os-version,omitempty"`
+	NodeVersion         string `yaml:"node-version,omitempty" json:"node-version,omitempty"`
+	KiroVersion         string `yaml:"kiro-version,omitempty" json:"kiro-version,omitempty"`
+	KiroHash            string `yaml:"kiro-hash,omitempty" json:"kiro-hash,omitempty"`
+}
+
+// KiroKey represents a config-backed Kiro OAuth/file auth entry.
+type KiroKey struct {
+	AccessToken  string `yaml:"access-token,omitempty" json:"access-token,omitempty"`
+	RefreshToken string `yaml:"refresh-token,omitempty" json:"refresh-token,omitempty"`
+	ExpiresAt    string `yaml:"expires-at,omitempty" json:"expires-at,omitempty"`
+	AuthMethod   string `yaml:"auth-method,omitempty" json:"auth-method,omitempty"`
+	ClientID     string `yaml:"client-id,omitempty" json:"client-id,omitempty"`
+	ClientSecret string `yaml:"client-secret,omitempty" json:"client-secret,omitempty"`
+	Region       string `yaml:"region,omitempty" json:"region,omitempty"`
+	StartURL     string `yaml:"start-url,omitempty" json:"start-url,omitempty"`
+	ProfileARN   string `yaml:"profile-arn,omitempty" json:"profile-arn,omitempty"`
+	Email        string `yaml:"email,omitempty" json:"email,omitempty"`
+
+	Priority          int         `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix            string      `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	ProxyURL          string      `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	PreferredEndpoint string      `yaml:"preferred-endpoint,omitempty" json:"preferred-endpoint,omitempty"`
+	Models            []KiroModel `yaml:"models,omitempty" json:"models,omitempty"`
+	ExcludedModels    []string    `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+}
+
+// KiroModel describes a mapping between a client alias and the upstream Kiro model name.
+type KiroModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias" json:"alias"`
+}
+
+func (m KiroModel) GetName() string  { return m.Name }
+func (m KiroModel) GetAlias() string { return m.Alias }
 
 // AmpUpstreamAPIKeyEntry maps a set of client API keys to a specific upstream API key.
 // When a request is authenticated with one of the APIKeys, the corresponding UpstreamAPIKey
@@ -573,6 +681,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.IncognitoBrowser = false
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -654,11 +763,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
 
+	// Sanitize Kiro provider config.
+	cfg.SanitizeKiroConfig()
+
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
+
+	cfg.NormalizeOAuthEndpointOverrides()
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
@@ -797,6 +911,102 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 		}
 	}
 	cfg.OAuthModelAlias = out
+}
+
+func (cfg *Config) NormalizeOAuthEndpointOverrides() {
+	if cfg == nil || len(cfg.OAuthEndpointOverrides) == 0 {
+		return
+	}
+	normalized := make(map[string]OAuthEndpointConfig, len(cfg.OAuthEndpointOverrides))
+	for provider, ep := range cfg.OAuthEndpointOverrides {
+		normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+		if normalizedProvider == "" {
+			continue
+		}
+		ep.ApiBaseURL = strings.TrimSpace(ep.ApiBaseURL)
+		ep.AuthorizeURL = strings.TrimSpace(ep.AuthorizeURL)
+		ep.TokenURL = strings.TrimSpace(ep.TokenURL)
+		ep.RefreshURL = strings.TrimSpace(ep.RefreshURL)
+		ep.UserinfoURL = strings.TrimSpace(ep.UserinfoURL)
+		ep.DeviceAuthorizeURL = strings.TrimSpace(ep.DeviceAuthorizeURL)
+		normalized[normalizedProvider] = ep
+	}
+	cfg.OAuthEndpointOverrides = normalized
+}
+
+func (cfg *Config) GetOAuthEndpointOverride(provider string) OAuthEndpointConfig {
+	if cfg == nil {
+		return OAuthEndpointConfig{}
+	}
+	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+	if cfg.OAuthEndpointOverrides != nil {
+		if ep, ok := cfg.OAuthEndpointOverrides[normalizedProvider]; ok {
+			return ep
+		}
+	}
+	return OAuthEndpointConfig{}
+}
+
+// SanitizeKiroConfig normalizes Kiro provider settings and drops empty config auth entries.
+func (cfg *Config) SanitizeKiroConfig() {
+	if cfg == nil {
+		return
+	}
+	cfg.Kiro.PreferredEndpoint = normalizeKiroEndpoint(cfg.Kiro.PreferredEndpoint)
+	fp := &cfg.Kiro.Fingerprint
+	fp.UserAgent = strings.TrimSpace(fp.UserAgent)
+	fp.AmzUserAgent = strings.TrimSpace(fp.AmzUserAgent)
+	fp.AgentMode = strings.TrimSpace(fp.AgentMode)
+	fp.Target = strings.TrimSpace(fp.Target)
+	fp.ClientID = strings.TrimSpace(fp.ClientID)
+	fp.ClientVersion = strings.TrimSpace(fp.ClientVersion)
+	fp.Platform = strings.TrimSpace(fp.Platform)
+	fp.Runtime = strings.TrimSpace(fp.Runtime)
+	fp.DeviceID = strings.TrimSpace(fp.DeviceID)
+	fp.MachineID = strings.TrimSpace(fp.MachineID)
+	fp.OIDCSDKVersion = strings.TrimSpace(fp.OIDCSDKVersion)
+	fp.RuntimeSDKVersion = strings.TrimSpace(fp.RuntimeSDKVersion)
+	fp.StreamingSDKVersion = strings.TrimSpace(fp.StreamingSDKVersion)
+	fp.OSType = strings.TrimSpace(fp.OSType)
+	fp.OSVersion = strings.TrimSpace(fp.OSVersion)
+	fp.NodeVersion = strings.TrimSpace(fp.NodeVersion)
+	fp.KiroVersion = strings.TrimSpace(fp.KiroVersion)
+	fp.KiroHash = strings.TrimSpace(fp.KiroHash)
+	if len(cfg.Kiro.Auths) == 0 {
+		return
+	}
+	out := make([]KiroKey, 0, len(cfg.Kiro.Auths))
+	for i := range cfg.Kiro.Auths {
+		entry := cfg.Kiro.Auths[i]
+		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
+		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
+		entry.ExpiresAt = strings.TrimSpace(entry.ExpiresAt)
+		entry.AuthMethod = strings.TrimSpace(entry.AuthMethod)
+		entry.ClientID = strings.TrimSpace(entry.ClientID)
+		entry.ClientSecret = strings.TrimSpace(entry.ClientSecret)
+		entry.Region = strings.TrimSpace(entry.Region)
+		entry.StartURL = strings.TrimSpace(entry.StartURL)
+		entry.ProfileARN = strings.TrimSpace(entry.ProfileARN)
+		entry.Email = strings.TrimSpace(entry.Email)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.PreferredEndpoint = normalizeKiroEndpoint(entry.PreferredEndpoint)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		if entry.AccessToken == "" && entry.RefreshToken == "" && entry.Email == "" && entry.ProfileARN == "" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	cfg.Kiro.Auths = out
+}
+
+func normalizeKiroEndpoint(endpoint string) string {
+	switch strings.ToLower(strings.TrimSpace(endpoint)) {
+	case "codewhisperer", "amazonq":
+		return strings.ToLower(strings.TrimSpace(endpoint))
+	default:
+		return ""
+	}
 }
 
 // SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are

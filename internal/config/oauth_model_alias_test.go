@@ -54,3 +54,61 @@ func TestSanitizeOAuthModelAlias_AllowsMultipleAliasesForSameName(t *testing.T) 
 		}
 	}
 }
+
+func TestSanitizeKiroConfig(t *testing.T) {
+	cfg := &Config{
+		Kiro: KiroConfig{
+			PreferredEndpoint: " AMAZONQ ",
+			Fingerprint: KiroFingerprintConfig{
+				UserAgent:    " Kiro ",
+				AmzUserAgent: " aws-toolkit ",
+			},
+			Auths: []KiroKey{
+				{},
+				{
+					Email:             " user@example.com ",
+					RefreshToken:      " refresh ",
+					PreferredEndpoint: " codewhisperer ",
+					Prefix:            "/team/",
+					ProxyURL:          " direct ",
+					ExcludedModels:    []string{" kiro-claude-opus-4-5 ", ""},
+				},
+				{
+					Email:             "invalid@example.com",
+					PreferredEndpoint: "invalid",
+					Prefix:            "team/a",
+				},
+			},
+		},
+	}
+
+	cfg.SanitizeKiroConfig()
+
+	if cfg.Kiro.PreferredEndpoint != "amazonq" {
+		t.Fatalf("expected preferred endpoint amazonq, got %q", cfg.Kiro.PreferredEndpoint)
+	}
+	if cfg.Kiro.Fingerprint.UserAgent != "Kiro" || cfg.Kiro.Fingerprint.AmzUserAgent != "aws-toolkit" {
+		t.Fatalf("unexpected fingerprint: %#v", cfg.Kiro.Fingerprint)
+	}
+	if len(cfg.Kiro.Auths) != 2 {
+		t.Fatalf("expected 2 non-empty Kiro auths, got %d", len(cfg.Kiro.Auths))
+	}
+	if got := cfg.Kiro.Auths[0].PreferredEndpoint; got != "codewhisperer" {
+		t.Fatalf("expected entry endpoint codewhisperer, got %q", got)
+	}
+	if got := cfg.Kiro.Auths[0].Prefix; got != "team" {
+		t.Fatalf("expected normalized prefix team, got %q", got)
+	}
+	if got := cfg.Kiro.Auths[0].ProxyURL; got != "direct" {
+		t.Fatalf("expected proxy direct, got %q", got)
+	}
+	if len(cfg.Kiro.Auths[0].ExcludedModels) != 1 || cfg.Kiro.Auths[0].ExcludedModels[0] != "kiro-claude-opus-4-5" {
+		t.Fatalf("unexpected excluded models: %#v", cfg.Kiro.Auths[0].ExcludedModels)
+	}
+	if got := cfg.Kiro.Auths[1].PreferredEndpoint; got != "" {
+		t.Fatalf("expected invalid endpoint to be cleared, got %q", got)
+	}
+	if got := cfg.Kiro.Auths[1].Prefix; got != "" {
+		t.Fatalf("expected invalid prefix to be cleared, got %q", got)
+	}
+}

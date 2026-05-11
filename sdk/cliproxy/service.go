@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -108,6 +109,7 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
 		sdkAuth.NewQwenAuthenticator(),
+		sdkAuth.NewKiroAuthenticator(),
 	)
 }
 
@@ -417,6 +419,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		return
 	case "antigravity":
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
+	case "kiro":
+		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
 	case "qwen":
@@ -686,6 +690,7 @@ func (s *Service) Run(ctx context.Context) error {
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(context.Background(), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
+		go s.startKiroModelRefresh(ctx, 3*time.Hour)
 	}
 
 	select {
@@ -766,6 +771,52 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		usage.StopDefault()
 	})
 	return shutdownErr
+}
+
+func (s *Service) startKiroModelRefresh(ctx context.Context, interval time.Duration) {
+	if s == nil || ctx == nil || interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Infof("kiro model refresh started (interval=%s)", interval)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshKiroModels()
+		}
+	}
+}
+
+func (s *Service) refreshKiroModels() {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+
+	auths := s.coreManager.List()
+	refreshed := 0
+	for _, item := range auths {
+		if item == nil || item.ID == "" {
+			continue
+		}
+		auth, ok := s.coreManager.GetByID(item.ID)
+		if !ok || auth == nil || auth.Disabled {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "kiro") {
+			continue
+		}
+		if s.refreshModelRegistrationForAuth(auth) {
+			refreshed++
+		}
+	}
+
+	if refreshed > 0 {
+		log.Infof("kiro: refreshed model registrations for %d auth(s)", refreshed)
+	}
 }
 
 func (s *Service) ensureAuthDir() error {
@@ -861,6 +912,14 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "antigravity":
 		models = registry.GetAntigravityModels()
+		models = applyExcludedModels(models, excluded)
+	case "kiro":
+		models = s.fetchKiroModels(a)
+		if entry := s.resolveConfigKiroKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildKiroConfigModels(entry)
+			}
+		}
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()
@@ -1180,6 +1239,39 @@ func (s *Service) resolveConfigCodexKey(auth *coreauth.Auth) *config.CodexKey {
 	return nil
 }
 
+func (s *Service) resolveConfigKiroKey(auth *coreauth.Auth) *config.KiroKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var email, profileARN, region, startURL, accessToken, refreshToken string
+	if auth.Metadata != nil {
+		email, _ = auth.Metadata["email"].(string)
+		profileARN, _ = auth.Metadata["profile_arn"].(string)
+		region, _ = auth.Metadata["region"].(string)
+		startURL, _ = auth.Metadata["start_url"].(string)
+		accessToken, _ = auth.Metadata["access_token"].(string)
+		refreshToken, _ = auth.Metadata["refresh_token"].(string)
+	}
+	for i := range s.cfg.Kiro.Auths {
+		entry := &s.cfg.Kiro.Auths[i]
+		if email != "" && strings.EqualFold(strings.TrimSpace(entry.Email), strings.TrimSpace(email)) {
+			return entry
+		}
+		if profileARN != "" && strings.EqualFold(strings.TrimSpace(entry.ProfileARN), strings.TrimSpace(profileARN)) {
+			return entry
+		}
+		if accessToken != "" && strings.EqualFold(strings.TrimSpace(entry.AccessToken), strings.TrimSpace(accessToken)) {
+			return entry
+		}
+		if refreshToken != "" && strings.EqualFold(strings.TrimSpace(entry.RefreshToken), strings.TrimSpace(refreshToken)) &&
+			(strings.EqualFold(strings.TrimSpace(entry.Region), strings.TrimSpace(region)) || region == "") &&
+			(strings.EqualFold(strings.TrimSpace(entry.StartURL), strings.TrimSpace(startURL)) || startURL == "") {
+			return entry
+		}
+	}
+	return nil
+}
+
 func (s *Service) oauthExcludedModels(provider, authKind string) []string {
 	cfg := s.cfg
 	if cfg == nil {
@@ -1392,6 +1484,118 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 	return buildConfigModels(entry.Models, "openai", "openai")
 }
 
+func buildKiroConfigModels(entry *config.KiroKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "kiro", "kiro")
+}
+
+// fetchKiroModels attempts to dynamically fetch Kiro models from the API.
+// If dynamic fetch fails, it falls back to static registry.GetKiroModels().
+func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
+	if a == nil {
+		log.Debug("kiro: auth is nil, using static models")
+		return registry.GetKiroModels()
+	}
+
+	tokenData := s.extractKiroTokenData(a)
+	if tokenData == nil || tokenData.AccessToken == "" {
+		log.Debug("kiro: no valid token data in auth, using static models")
+		return registry.GetKiroModels()
+	}
+
+	kAuth := kiroauth.NewKiroAuth(s.cfg)
+	if kAuth == nil {
+		log.Warn("kiro: failed to create KiroAuth instance, using static models")
+		return registry.GetKiroModels()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	apiModels, err := kAuth.ListAvailableModels(ctx, tokenData)
+	if err != nil {
+		log.Warnf("kiro: failed to fetch dynamic models: %v, using static models", err)
+		return registry.GetKiroModels()
+	}
+	if len(apiModels) == 0 {
+		log.Debug("kiro: API returned no models, using static models")
+		return registry.GetKiroModels()
+	}
+
+	models := registry.ConvertKiroAPIModels(toKiroAPIModels(apiModels))
+	models = registry.MergeWithStaticMetadata(models, registry.GetKiroModels())
+	models = registry.GenerateAgenticVariants(models)
+	log.Infof("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
+	return models
+}
+
+func (s *Service) extractKiroTokenData(a *coreauth.Auth) *kiroauth.KiroTokenData {
+	if a == nil {
+		return nil
+	}
+
+	var accessToken, profileArn, refreshToken, clientID, authMethod string
+	if a.Attributes != nil {
+		accessToken = strings.TrimSpace(a.Attributes["access_token"])
+		profileArn = strings.TrimSpace(a.Attributes["profile_arn"])
+		refreshToken = strings.TrimSpace(a.Attributes["refresh_token"])
+		clientID = strings.TrimSpace(a.Attributes["client_id"])
+		authMethod = strings.TrimSpace(a.Attributes["auth_method"])
+	}
+	if a.Metadata != nil {
+		if accessToken == "" {
+			accessToken, _ = a.Metadata["access_token"].(string)
+			accessToken = strings.TrimSpace(accessToken)
+		}
+		if profileArn == "" {
+			profileArn, _ = a.Metadata["profile_arn"].(string)
+			profileArn = strings.TrimSpace(profileArn)
+		}
+		if refreshToken == "" {
+			refreshToken, _ = a.Metadata["refresh_token"].(string)
+			refreshToken = strings.TrimSpace(refreshToken)
+		}
+		if clientID == "" {
+			clientID, _ = a.Metadata["client_id"].(string)
+			clientID = strings.TrimSpace(clientID)
+		}
+		if authMethod == "" {
+			authMethod, _ = a.Metadata["auth_method"].(string)
+			authMethod = strings.TrimSpace(authMethod)
+		}
+	}
+	if accessToken == "" {
+		return nil
+	}
+	return &kiroauth.KiroTokenData{
+		AccessToken:  accessToken,
+		ProfileArn:   profileArn,
+		RefreshToken: refreshToken,
+		ClientID:     clientID,
+		AuthMethod:   authMethod,
+	}
+}
+
+func toKiroAPIModels(src []*kiroauth.KiroModel) []*registry.KiroAPIModel {
+	out := make([]*registry.KiroAPIModel, 0, len(src))
+	for _, m := range src {
+		if m == nil {
+			continue
+		}
+		out = append(out, &registry.KiroAPIModel{
+			ModelID:        m.ModelID,
+			ModelName:      m.ModelName,
+			Description:    m.Description,
+			RateMultiplier: m.RateMultiplier,
+			RateUnit:       m.RateUnit,
+			MaxInputTokens: m.MaxInputTokens,
+		})
+	}
+	return out
+}
+
 func rewriteModelInfoName(name, oldID, newID string) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -1453,6 +1657,18 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 		return models
 	}
 
+	realIDs := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		realIDs[strings.ToLower(id)] = struct{}{}
+	}
+
 	out := make([]*ModelInfo, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
 	for _, model := range models {
@@ -1498,17 +1714,22 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 				continue
 			}
 			aliasKey := strings.ToLower(mappedID)
+			if _, isRealModel := realIDs[aliasKey]; isRealModel {
+				continue
+			}
 			if _, exists := seen[aliasKey]; exists {
 				continue
 			}
 			seen[aliasKey] = struct{}{}
 			clone := *model
 			clone.ID = mappedID
+			clone.ExecutionTarget = id
 			if clone.Name != "" {
 				clone.Name = rewriteModelInfoName(clone.Name, id, mappedID)
 			}
 			out = append(out, &clone)
 			addedAlias = true
+			log.Debugf("applyOAuthModelAlias: created alias model id=%s from target=%s", mappedID, id)
 		}
 
 		if !keepOriginal && !addedAlias {

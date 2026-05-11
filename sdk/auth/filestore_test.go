@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestExtractAccessToken(t *testing.T) {
 	t.Parallel()
@@ -76,5 +80,33 @@ func TestExtractAccessToken(t *testing.T) {
 				t.Errorf("extractAccessToken() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFileTokenStoreListPreservesKiroMetadata(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiro.json")
+	raw := []byte(`{"type":"kiro","email":"user@example.com","access_token":"access","refresh_token":"refresh","region":"us-east-1","profile_arn":"arn:aws:sso:::permissionSet/example"}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	auths, err := store.List(t.Context())
+	if err != nil {
+		t.Fatalf("list auths: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
+	if auth.Provider != "kiro" {
+		t.Fatalf("expected provider kiro, got %q", auth.Provider)
+	}
+	if auth.Metadata["type"] != "kiro" || auth.Metadata["email"] != "user@example.com" || auth.Metadata["refresh_token"] != "refresh" {
+		t.Fatalf("unexpected metadata: %#v", auth.Metadata)
 	}
 }

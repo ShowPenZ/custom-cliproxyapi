@@ -227,6 +227,59 @@ nonstream-keepalive-interval: 0
 #   user-agent: "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
 #   beta-features: "multi_agent"
 
+# Open OAuth URLs in incognito/private browsing mode when supported.
+# incognito-browser: false
+
+# Optional OAuth endpoint overrides. Kiro uses api-base-url for AWS SSO OIDC
+# endpoints, token-url/refresh-url for Kiro CLI/social token exchange, and
+# userinfo-url for SSO user email lookup.
+# oauth-endpoint-overrides:
+#   kiro:
+#     api-base-url: "https://oidc.us-east-1.amazonaws.com"
+#     token-url: "https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token"
+#     refresh-url: "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken"
+#     userinfo-url: "https://oidc.us-east-1.amazonaws.com/userinfo"
+
+# Kiro OAuth/file auth provider
+# kiro:
+#   # Preferred upstream endpoint: codewhisperer, amazonq, or empty for default executor behavior.
+#   preferred-endpoint: "codewhisperer"
+#   # Optional Kiro client fingerprint defaults used by the executor.
+#   fingerprint:
+#     user-agent: "Kiro"
+#     x-amz-user-agent: ""
+#     agent-mode: ""
+#     target: ""
+#     oidc-sdk-version: ""
+#     runtime-sdk-version: ""
+#     streaming-sdk-version: ""
+#     os-type: ""
+#     os-version: ""
+#     node-version: ""
+#     kiro-version: ""
+#     kiro-hash: ""
+#   # Optional config-backed auth entries for imported Kiro token material.
+#   # CLI/browser login commands also create Kiro auth files under auth-dir.
+#   auths:
+#     - email: "user@example.com"
+#       access-token: ""
+#       refresh-token: ""
+#       expires-at: ""
+#       auth-method: "kiro-cli"
+#       client-id: ""
+#       client-secret: ""
+#       region: "us-east-1"
+#       start-url: ""
+#       profile-arn: ""
+#       preferred-endpoint: "codewhisperer"
+#       prefix: "work"
+#       proxy-url: "socks5://proxy.example.com:1080"
+#       models:
+#         - name: "kiro-claude-sonnet-4-5"
+#           alias: "kiro-sonnet"
+#       excluded-models:
+#         - "kiro-claude-opus-4-5"
+
 # OpenAI compatibility providers
 # openai-compatibility:
 #   - name: "openrouter" # The name of the provider; it will be used in the user agent and other places.
@@ -310,7 +363,7 @@ nonstream-keepalive-interval: 0
 
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
-# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kimi.
+# Supported channels: gemini-cli, vertex, aistudio, antigravity, kiro, claude, codex, qwen, iflow, kimi.
 # NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, or ampcode.
 # You can repeat the same name with different aliases to expose multiple client model names.
 # oauth-model-alias:
@@ -327,6 +380,9 @@ nonstream-keepalive-interval: 0
 #   antigravity:
 #     - name: "gemini-3-pro-high"
 #       alias: "gemini-3-pro-preview"
+#   kiro:
+#     - name: "kiro-claude-sonnet-4-5"
+#       alias: "claude-sonnet-4-5"
 #   claude:
 #     - name: "claude-sonnet-4-5-20250929"
 #       alias: "cs4.5"
@@ -356,6 +412,8 @@ nonstream-keepalive-interval: 0
 #     - "gemini-3-pro-preview"
 #   antigravity:
 #     - "gemini-3-pro-preview"
+#   kiro:
+#     - "kiro-claude-opus-4-5"
 #   claude:
 #     - "claude-3-5-haiku-20241022"
 #   codex:

@@ -4,7 +4,7 @@ English | [中文](README_CN.md) | [日本語](README_JA.md)
 
 A proxy server that provides OpenAI/Gemini/Claude/Codex compatible API interfaces for CLI.
 
-It now also supports OpenAI Codex (GPT models) and Claude Code via OAuth.
+It now also supports OpenAI Codex (GPT models), Claude Code, and Kiro/AWS Q Developer via OAuth.
 
 So you can use local or multi-account CLI access with OpenAI(include Responses)/Gemini/Claude-compatible clients and SDKs.
 
@@ -38,20 +38,22 @@ Get 10% OFF GLM CODING PLAN：https://z.ai/subscribe?ic=8JVLJQFSKB
 - OpenAI/Gemini/Claude compatible API endpoints for CLI models
 - OpenAI Codex support (GPT models) via OAuth login
 - Claude Code support via OAuth login
+- Kiro/AWS Q Developer support via Kiro CLI OAuth, AWS Builder ID/IDC login, or imported Kiro IDE tokens
 - Qwen Code support via OAuth login
 - iFlow support via OAuth login
 - Amp CLI and IDE extensions support with provider routing
 - Streaming and non-streaming responses
 - Function calling/tools support
 - Multimodal input support (text and images)
-- Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude, Qwen and iFlow)
-- Simple CLI authentication flows (Gemini, OpenAI, Claude, Qwen and iFlow)
+- Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude, Kiro, Qwen and iFlow)
+- Simple CLI authentication flows (Gemini, OpenAI, Claude, Kiro, Qwen and iFlow)
 - Generative Language API Key support
 - AI Studio Build multi-account load balancing
 - Gemini CLI multi-account load balancing
 - Claude Code multi-account load balancing
 - Qwen Code multi-account load balancing
 - iFlow multi-account load balancing
+- Kiro multi-account load balancing
 - OpenAI Codex multi-account load balancing
 - Runtime upstream auth status inspection for OAuth and API-key accounts (`online`, `cooling`, `retry-wait`, `disabled`)
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
@@ -68,6 +70,20 @@ see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 - Runtime upstream auth state is available from `GET /v0/management/runtime-auths`
 - The response includes cooldown and retry timing so operators can see which upstream accounts are online or cooling down
 - For a practical local operations example covering HTTPS reverse proxy, teammate API keys, usage stats, and `cliproxy-upstream-status`, see [LOCAL_SETUP.md](LOCAL_SETUP.md)
+
+## Kiro Support
+
+Kiro can be used through the OpenAI-compatible `/v1/chat/completions` API and the Claude-compatible `/v1/messages` API. Start by creating an auth file:
+
+```bash
+cliproxyapi --kiro-cli-login
+cliproxyapi --kiro-import /path/to/kiro-token.json
+cliproxyapi --kiro-idc-login --kiro-idc-flow auth-code
+```
+
+Use `/v1/models` to inspect available `kiro-*` models. Dynamic Kiro model discovery is attempted automatically and falls back to the built-in static model table.
+
+Common failures: `401` usually means the token expired or is invalid; `403` usually means the account/profile lacks access; `429` is quota or rate limiting; IDC login requires the correct `--kiro-idc-start-url` and `--kiro-idc-region`; auth-code login needs a free local callback port.
 
 ## Amp CLI Support
 

@@ -4,7 +4,7 @@
 
 一个为 CLI 提供 OpenAI/Gemini/Claude/Codex 兼容 API 接口的代理服务器。
 
-现已支持通过 OAuth 登录接入 OpenAI Codex（GPT 系列）和 Claude Code。
+现已支持通过 OAuth 登录接入 OpenAI Codex（GPT 系列）、Claude Code 和 Kiro/AWS Q Developer。
 
 您可以使用本地或多账户的CLI方式，通过任何与 OpenAI（包括Responses）/Gemini/Claude 兼容的客户端和SDK进行访问。
 
@@ -39,19 +39,21 @@ GLM CODING PLAN 是专为AI编码打造的订阅套餐，每月最低仅需20元
 - 为 CLI 模型提供 OpenAI/Gemini/Claude/Codex 兼容的 API 端点
 - 新增 OpenAI Codex（GPT 系列）支持（OAuth 登录）
 - 新增 Claude Code 支持（OAuth 登录）
+- 新增 Kiro/AWS Q Developer 支持，可使用 Kiro CLI OAuth、AWS Builder ID/IDC 登录或导入 Kiro IDE token
 - 新增 Qwen Code 支持（OAuth 登录）
 - 新增 iFlow 支持（OAuth 登录）
 - 支持流式与非流式响应
 - 函数调用/工具支持
 - 多模态输入（文本、图片）
-- 多账户支持与轮询负载均衡（Gemini、OpenAI、Claude、Qwen 与 iFlow）
-- 简单的 CLI 身份验证流程（Gemini、OpenAI、Claude、Qwen 与 iFlow）
+- 多账户支持与轮询负载均衡（Gemini、OpenAI、Claude、Kiro、Qwen 与 iFlow）
+- 简单的 CLI 身份验证流程（Gemini、OpenAI、Claude、Kiro、Qwen 与 iFlow）
 - 支持 Gemini AIStudio API 密钥
 - 支持 AI Studio Build 多账户轮询
 - 支持 Gemini CLI 多账户轮询
 - 支持 Claude Code 多账户轮询
 - 支持 Qwen Code 多账户轮询
 - 支持 iFlow 多账户轮询
+- 支持 Kiro 多账户轮询
 - 支持 OpenAI Codex 多账户轮询
 - 支持查看 OAuth 与 API Key 上游账号的运行态状态（`online`、`cooling`、`retry-wait`、`disabled`）
 - 通过配置接入上游 OpenAI 兼容提供商（例如 OpenRouter）
@@ -68,6 +70,20 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 - 可通过 `GET /v0/management/runtime-auths` 查看上游账号的运行态状态
 - 返回结果会包含冷却恢复时间与重试时间，便于运维判断哪些上游在线、哪些仍在冷却
 - 如需查看 HTTPS 反代、本地同事 API Key 分发、使用量统计、Antigravity 本地运维命令与公开 quota 查询示例，请参见 [LOCAL_SETUP.md](LOCAL_SETUP.md)
+
+## Kiro 支持
+
+Kiro 可通过 OpenAI 兼容的 `/v1/chat/completions` 和 Claude 兼容的 `/v1/messages` 使用。先创建认证文件：
+
+```bash
+cliproxyapi --kiro-cli-login
+cliproxyapi --kiro-import /path/to/kiro-token.json
+cliproxyapi --kiro-idc-login --kiro-idc-flow auth-code
+```
+
+使用 `/v1/models` 查看可用的 `kiro-*` 模型。服务会自动尝试动态拉取 Kiro 模型，失败时回退内置静态模型表。
+
+常见错误：`401` 通常表示 token 过期或无效；`403` 通常表示账号或 profile 无权限；`429` 是配额或限速；IDC 登录需要正确的 `--kiro-idc-start-url` 与 `--kiro-idc-region`；auth-code 登录需要本地回调端口可用。
 
 ## Amp CLI 支持
 

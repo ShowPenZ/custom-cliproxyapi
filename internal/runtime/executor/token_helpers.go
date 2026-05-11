@@ -37,6 +37,10 @@ func tokenizerForModel(model string) (tokenizer.Codec, error) {
 	}
 }
 
+func getTokenizer(model string) (tokenizer.Codec, error) {
+	return tokenizerForModel(model)
+}
+
 // countOpenAIChatTokens approximates prompt tokens for OpenAI chat completions payloads.
 func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	if enc == nil {
@@ -69,9 +73,102 @@ func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	return int64(count), nil
 }
 
+// countClaudeChatTokens approximates prompt tokens for Claude Messages payloads.
+func countClaudeChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
+	if enc == nil {
+		return 0, fmt.Errorf("encoder is nil")
+	}
+	if len(payload) == 0 {
+		return 0, nil
+	}
+
+	root := gjson.ParseBytes(payload)
+	segments := make([]string, 0, 32)
+
+	collectClaudeContent(root.Get("system"), &segments)
+	collectClaudeMessages(root.Get("messages"), &segments)
+	collectClaudeTools(root.Get("tools"), &segments)
+	collectOpenAIToolChoice(root.Get("tool_choice"), &segments)
+
+	joined := strings.TrimSpace(strings.Join(segments, "\n"))
+	if joined == "" {
+		return 0, nil
+	}
+
+	count, err := enc.Count(joined)
+	if err != nil {
+		return 0, err
+	}
+	return int64(count), nil
+}
+
 // buildOpenAIUsageJSON returns a minimal usage structure understood by downstream translators.
 func buildOpenAIUsageJSON(count int64) []byte {
 	return []byte(fmt.Sprintf(`{"usage":{"prompt_tokens":%d,"completion_tokens":0,"total_tokens":%d}}`, count, count))
+}
+
+func collectClaudeMessages(messages gjson.Result, segments *[]string) {
+	if !messages.Exists() || !messages.IsArray() {
+		return
+	}
+	messages.ForEach(func(_, message gjson.Result) bool {
+		addIfNotEmpty(segments, message.Get("role").String())
+		collectClaudeContent(message.Get("content"), segments)
+		return true
+	})
+}
+
+func collectClaudeContent(content gjson.Result, segments *[]string) {
+	if !content.Exists() {
+		return
+	}
+	if content.Type == gjson.String {
+		addIfNotEmpty(segments, content.String())
+		return
+	}
+	if content.IsArray() {
+		content.ForEach(func(_, part gjson.Result) bool {
+			switch part.Get("type").String() {
+			case "text":
+				addIfNotEmpty(segments, part.Get("text").String())
+			case "image":
+				addIfNotEmpty(segments, part.Get("source.media_type").String())
+				addIfNotEmpty(segments, part.Get("source.data").String())
+			case "tool_use":
+				addIfNotEmpty(segments, part.Get("id").String())
+				addIfNotEmpty(segments, part.Get("name").String())
+				addIfNotEmpty(segments, part.Get("input").Raw)
+			case "tool_result":
+				addIfNotEmpty(segments, part.Get("tool_use_id").String())
+				collectClaudeContent(part.Get("content"), segments)
+			default:
+				if part.Type == gjson.JSON {
+					addIfNotEmpty(segments, part.Raw)
+					return true
+				}
+				addIfNotEmpty(segments, part.String())
+			}
+			return true
+		})
+		return
+	}
+	if content.Type == gjson.JSON {
+		addIfNotEmpty(segments, content.Raw)
+	}
+}
+
+func collectClaudeTools(tools gjson.Result, segments *[]string) {
+	if !tools.Exists() || !tools.IsArray() {
+		return
+	}
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		addIfNotEmpty(segments, tool.Get("name").String())
+		addIfNotEmpty(segments, tool.Get("description").String())
+		if inputSchema := tool.Get("input_schema"); inputSchema.Exists() {
+			addIfNotEmpty(segments, inputSchema.Raw)
+		}
+		return true
+	})
 }
 
 func collectOpenAIMessages(messages gjson.Result, segments *[]string) {
