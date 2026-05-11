@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
@@ -22,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ClaudeCodeAPIHandler contains the handlers for Claude API endpoints.
@@ -76,6 +78,8 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 		return
 	}
 
+	rawJSON = rewriteClaudeCodeKiroPayload(c, rawJSON)
+
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if !streamResult.Exists() || streamResult.Type == gjson.False {
@@ -104,6 +108,8 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 		})
 		return
 	}
+
+	rawJSON = rewriteClaudeCodeKiroPayload(c, rawJSON)
 
 	c.Header("Content-Type", "application/json")
 
@@ -148,6 +154,68 @@ func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
 		"first_id": firstID,
 		"last_id":  lastID,
 	})
+}
+
+func rewriteClaudeCodeKiroPayload(c *gin.Context, rawJSON []byte) []byte {
+	if !shouldUseKiroClaudeCompat(c) || len(rawJSON) == 0 {
+		return rawJSON
+	}
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	kiroModel := kiroClaudeCodeModel(modelName)
+	if kiroModel == "" || strings.EqualFold(strings.TrimSpace(modelName), kiroModel) {
+		return rawJSON
+	}
+	updated, err := sjson.SetBytes(rawJSON, "model", kiroModel)
+	if err != nil {
+		log.Warnf("claude/kiro compat: failed to rewrite model %q to %q: %v", modelName, kiroModel, err)
+		return rawJSON
+	}
+	log.Debugf("claude/kiro compat: rewrote model %q to %q", modelName, kiroModel)
+	return updated
+}
+
+func shouldUseKiroClaudeCompat(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(c.GetHeader("X-CLIProxy-Route")), "kiro") {
+		return true
+	}
+	if value, exists := c.Get("apiKey"); exists {
+		if key, ok := value.(string); ok && strings.HasPrefix(strings.TrimSpace(key), "sk-kiro-") {
+			return true
+		}
+	}
+	return false
+}
+
+func kiroClaudeCodeModel(modelName string) string {
+	model := strings.ToLower(strings.TrimSpace(modelName))
+	if model == "" || strings.HasPrefix(model, "kiro-") {
+		return strings.TrimSpace(modelName)
+	}
+	switch {
+	case model == "sonnet" || strings.Contains(model, "sonnet"):
+		switch {
+		case strings.Contains(model, "4-5"):
+			return "kiro-claude-sonnet-4-5"
+		default:
+			return "kiro-claude-sonnet-4-6"
+		}
+	case model == "opus" || strings.Contains(model, "opus"):
+		switch {
+		case strings.Contains(model, "4-5"):
+			return "kiro-claude-opus-4-5"
+		case strings.Contains(model, "4-6"):
+			return "kiro-claude-opus-4-6"
+		default:
+			return "kiro-claude-opus-4-7"
+		}
+	case model == "haiku" || strings.Contains(model, "haiku"):
+		return "kiro-claude-haiku-4-5"
+	default:
+		return strings.TrimSpace(modelName)
+	}
 }
 
 // handleNonStreamingResponse handles non-streaming content generation requests for Claude models.
