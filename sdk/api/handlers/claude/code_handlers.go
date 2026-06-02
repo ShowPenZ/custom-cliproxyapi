@@ -209,7 +209,7 @@ func kiroClaudeCodeModel(modelName string) string {
 		case strings.Contains(model, "4-6"):
 			return "kiro-claude-opus-4-6"
 		default:
-			return "kiro-claude-opus-4-7"
+			return "kiro-claude-opus-4-6"
 		}
 	case model == "haiku" || strings.Contains(model, "haiku"):
 		return "kiro-claude-haiku-4-5"

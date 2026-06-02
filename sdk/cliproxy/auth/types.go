@@ -389,6 +389,13 @@ func (a *Auth) AccountInfo() (string, string) {
 	if a == nil {
 		return "", ""
 	}
+	if strings.EqualFold(a.Provider, "kiro") && a.Metadata != nil {
+		if method, _ := a.Metadata["auth_method"].(string); strings.EqualFold(strings.TrimSpace(method), "api-key") {
+			if v, ok := a.Metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+				return "api_key", strings.TrimSpace(v)
+			}
+		}
+	}
 	// For Gemini CLI, include project ID in the OAuth account info if present.
 	if strings.ToLower(a.Provider) == "gemini-cli" {
 		if a.Metadata != nil {
@@ -428,6 +435,11 @@ func (a *Auth) AccountInfo() (string, string) {
 		}
 	}
 	// Fall back to API key (API-key auth)
+	if a.Metadata != nil {
+		if v, ok := a.Metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+			return "api_key", strings.TrimSpace(v)
+		}
+	}
 	if a.Attributes != nil {
 		if v := a.Attributes["api_key"]; v != "" {
 			return "api_key", v

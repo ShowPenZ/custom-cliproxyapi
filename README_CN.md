@@ -79,11 +79,13 @@ Kiro 可通过 OpenAI 兼容的 `/v1/chat/completions` 和 Claude 兼容的 `/v1
 cliproxyapi --kiro-cli-login
 cliproxyapi --kiro-import /path/to/kiro-token.json
 cliproxyapi --kiro-idc-login --kiro-idc-flow auth-code
+cliproxyapi --kiro-api-key ksk_xxxxx
+# 或：KIRO_API_KEY=ksk_xxxxx cliproxyapi --kiro-api-key-login
 ```
 
 使用 `/v1/models` 查看可用的 `kiro-*` 模型。服务会自动尝试动态拉取 Kiro 模型，失败时回退内置静态模型表。
 
-常见错误：`401` 通常表示 token 过期或无效；`403` 通常表示账号或 profile 无权限；`429` 是配额或限速；IDC 登录需要正确的 `--kiro-idc-start-url` 与 `--kiro-idc-region`；auth-code 登录需要本地回调端口可用。
+常见错误：`401` 通常表示 token 过期或无效；`403` 通常表示账号或 profile 无权限；`429` 是配额或限速；IDC 登录需要正确的 `--kiro-idc-start-url` 与 `--kiro-idc-region`；auth-code 登录需要本地回调端口可用。Kiro API Key 需要组织或管理员先允许生成 API Key。
 
 ## Amp CLI 支持
 

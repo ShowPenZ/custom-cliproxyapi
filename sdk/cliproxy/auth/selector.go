@@ -369,6 +369,9 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	if authReauthRequired(auth) {
+		return true, blockReasonOther, time.Time{}
+	}
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			state, ok := auth.ModelStates[model]
@@ -419,4 +422,14 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 		return true, blockReasonOther, next
 	}
 	return false, blockReasonNone, time.Time{}
+}
+
+func authReauthRequired(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(auth.StatusMessage), "reauth_required") {
+		return true
+	}
+	return isReauthRequiredError(auth.LastError)
 }

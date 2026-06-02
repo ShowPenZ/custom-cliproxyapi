@@ -412,6 +412,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account_type"] = accountType
 		}
 		if account != "" {
+			if accountType == "api_key" {
+				account = util.HideAPIKey(account)
+			}
 			entry["account"] = account
 		}
 	}

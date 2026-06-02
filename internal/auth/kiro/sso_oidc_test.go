@@ -3,6 +3,7 @@ package kiro
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +99,37 @@ func TestCreateTokenWithAuthCodeAndRegion(t *testing.T) {
 	}
 	if resp.AccessToken != "access" || resp.RefreshToken != "refresh" {
 		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestRefreshTokenWithRegionInvalidGrantRequiresReauth(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			t.Fatalf("path = %q, want /token", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":             "invalid_grant",
+			"error_description": "Invalid refresh token provided",
+		})
+	}))
+	defer ts.Close()
+
+	client := NewSSOOIDCClient(&config.Config{
+		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
+			"kiro": {ApiBaseURL: ts.URL},
+		},
+	})
+
+	_, err := client.RefreshTokenWithRegion(context.Background(), "client-id", "secret", "refresh", "us-west-2", "https://example.awsapps.com/start")
+	if err == nil {
+		t.Fatal("RefreshTokenWithRegion() error = nil, want invalid_grant")
+	}
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("errors.Is(err, ErrReauthRequired) = false, err = %v", err)
+	}
+	if !IsReauthRequired(err) {
+		t.Fatalf("IsReauthRequired(err) = false, err = %v", err)
 	}
 }
 

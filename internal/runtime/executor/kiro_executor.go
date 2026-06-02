@@ -66,6 +66,15 @@ const (
 	kiroStreamingReadTimeout = 300 * time.Second
 )
 
+const kiroReauthRequiredMessage = "kiro authentication expired; re-login required"
+
+func kiroReauthRequiredError(err error) (statusErr, bool) {
+	if kiroauth.IsReauthRequired(err) {
+		return statusErr{code: http.StatusUnauthorized, msg: kiroReauthRequiredMessage}, true
+	}
+	return statusErr{}, false
+}
+
 // retryableHTTPStatusCodes defines HTTP status codes that are considered retryable.
 // Based on kiro2Api reference: 502 (Bad Gateway), 503 (Service Unavailable), 504 (Gateway Timeout)
 var retryableHTTPStatusCodes = map[int]bool{
@@ -513,6 +522,10 @@ func isKiroCLIAuth(auth *cliproxyauth.Auth) bool {
 	return false
 }
 
+func isKiroAPIKeyAuth(auth *cliproxyauth.Auth) bool {
+	return getAuthValue(auth, "auth_method") == "api-key" || strings.TrimSpace(getRawAuthValue(auth, "api_key")) != ""
+}
+
 func resolveRequestOrigin(auth *cliproxyauth.Auth, fallback string) string {
 	if isKiroCLIAuth(auth) {
 		if strings.EqualFold(strings.TrimSpace(fallback), kiroauth.KiroOriginAIEditor) {
@@ -524,6 +537,20 @@ func resolveRequestOrigin(auth *cliproxyauth.Auth, fallback string) string {
 		return fallback
 	}
 	return kiroauth.KiroOriginAIEditor
+}
+
+func setKiroAuthorization(req *http.Request, auth *cliproxyauth.Auth, credential string) {
+	if req == nil {
+		return
+	}
+	credential = strings.TrimSpace(credential)
+	if credential == "" {
+		return
+	}
+	// Kiro's public CLI API-key mode exposes KIRO_API_KEY but not a separate
+	// runtime header contract. Treat the key as a bearer credential so this
+	// path stays isolated and easy to adjust if Kiro changes the wire format.
+	req.Header.Set("Authorization", "Bearer "+credential)
 }
 
 func applyDynamicFingerprint(req *http.Request, auth *cliproxyauth.Auth) {
@@ -566,7 +593,7 @@ func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	setKiroAuthorization(req, auth, accessToken)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -599,14 +626,21 @@ func (e *KiroExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 // 4) access_token (least preferred but deterministic)
 // 5) fixed anonymous seed
 func getAccountKey(auth *cliproxyauth.Auth) string {
-	var clientID, refreshToken, profileArn string
+	var clientID, refreshToken, profileArn, apiKey string
 	if auth != nil && auth.Metadata != nil {
 		clientID, _ = auth.Metadata["client_id"].(string)
 		refreshToken, _ = auth.Metadata["refresh_token"].(string)
 		profileArn, _ = auth.Metadata["profile_arn"].(string)
+		apiKey, _ = auth.Metadata["api_key"].(string)
+	}
+	if auth != nil && auth.Attributes != nil && apiKey == "" {
+		apiKey = auth.Attributes["api_key"]
 	}
 	if clientID != "" || refreshToken != "" {
 		return kiroauth.GetAccountKey(clientID, refreshToken)
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		return kiroauth.GenerateAccountKey(apiKey)
 	}
 	if auth != nil && auth.ID != "" {
 		return kiroauth.GenerateAccountKey(auth.ID)
@@ -638,12 +672,29 @@ func getAuthValue(auth *cliproxyauth.Auth, key string) string {
 	return ""
 }
 
+func getRawAuthValue(auth *cliproxyauth.Auth, key string) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Metadata != nil {
+		if v, ok := auth.Metadata[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	if auth.Attributes != nil {
+		if v := strings.TrimSpace(auth.Attributes[key]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // Execute sends the request to Kiro API and returns the response.
 // Supports automatic token refresh on 401/403 errors.
 func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	accessToken, profileArn := kiroCredentials(auth)
 	if accessToken == "" {
-		return resp, fmt.Errorf("kiro: access token not found in auth")
+		return resp, fmt.Errorf("kiro: credential not found in auth")
 	}
 
 	// Rate limiting: get token key for tracking
@@ -665,7 +716,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	log.Debugf("kiro: rate limiter cleared for token %s", tokenKey)
 
 	// Check if token is expired before making request (covers both normal and web_search paths)
-	if e.isTokenExpired(accessToken) {
+	if !isKiroAPIKeyAuth(auth) && e.isTokenExpired(accessToken) {
 		log.Infof("kiro: access token expired, attempting recovery")
 
 		// 方案 B: 先尝试从文件重新加载 token（后台刷新器可能已更新文件）
@@ -681,6 +732,9 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 			if refreshErr != nil {
 				log.Warnf("kiro: pre-request token refresh failed: %v", refreshErr)
+				if reauthErr, ok := kiroReauthRequiredError(refreshErr); ok {
+					return resp, reauthErr
+				}
 			} else if refreshedAuth != nil {
 				auth = refreshedAuth
 				// Persist the refreshed auth to file so subsequent requests use it
@@ -778,8 +832,8 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
-			// Bearer token authentication for all auth types (Builder ID, IDC, social, etc.)
-			httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+			// Bearer token authentication for OAuth tokens and Kiro API keys.
+			setKiroAuthorization(httpReq, auth, accessToken)
 
 			var attrs map[string]string
 			if auth != nil {
@@ -898,6 +952,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				log.Warnf("kiro: received 401 error, attempting token refresh")
 				refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 				if refreshErr != nil {
+					if reauthErr, ok := kiroReauthRequiredError(refreshErr); ok {
+						return resp, reauthErr
+					}
 					return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 				}
 
@@ -965,6 +1022,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 					log.Warnf("kiro: 403 appears token-related, attempting token refresh")
 					refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 					if refreshErr != nil {
+						if reauthErr, ok := kiroReauthRequiredError(refreshErr); ok {
+							return resp, reauthErr
+						}
 						// Token refresh failed - return error immediately
 						return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 					}
@@ -1074,7 +1134,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	accessToken, profileArn := kiroCredentials(auth)
 	if accessToken == "" {
-		return nil, fmt.Errorf("kiro: access token not found in auth")
+		return nil, fmt.Errorf("kiro: credential not found in auth")
 	}
 
 	// Rate limiting: get token key for tracking
@@ -1096,7 +1156,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	log.Debugf("kiro: stream rate limiter cleared for token %s", tokenKey)
 
 	// Check if token is expired before making request (covers both normal and web_search paths)
-	if e.isTokenExpired(accessToken) {
+	if !isKiroAPIKeyAuth(auth) && e.isTokenExpired(accessToken) {
 		log.Infof("kiro: access token expired, attempting recovery before stream request")
 
 		// 方案 B: 先尝试从文件重新加载 token（后台刷新器可能已更新文件）
@@ -1112,6 +1172,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 			if refreshErr != nil {
 				log.Warnf("kiro: pre-request token refresh failed: %v", refreshErr)
+				if reauthErr, ok := kiroReauthRequiredError(refreshErr); ok {
+					return nil, reauthErr
+				}
 			} else if refreshedAuth != nil {
 				auth = refreshedAuth
 				// Persist the refreshed auth to file so subsequent requests use it
@@ -1216,8 +1279,8 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
-			// Bearer token authentication for all auth types (Builder ID, IDC, social, etc.)
-			httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+			// Bearer token authentication for OAuth tokens and Kiro API keys.
+			setKiroAuthorization(httpReq, auth, accessToken)
 
 			var attrs map[string]string
 			if auth != nil {
@@ -1335,6 +1398,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				log.Warnf("kiro: stream received 401 error, attempting token refresh")
 				refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 				if refreshErr != nil {
+					if reauthErr, ok := kiroReauthRequiredError(refreshErr); ok {
+						return nil, reauthErr
+					}
 					return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 				}
 
@@ -1402,6 +1468,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 					log.Warnf("kiro: 403 appears token-related, attempting token refresh")
 					refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 					if refreshErr != nil {
+						if reauthErr, ok := kiroReauthRequiredError(refreshErr); ok {
+							return nil, reauthErr
+						}
 						// Token refresh failed - return error immediately
 						return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 					}
@@ -1488,6 +1557,11 @@ func kiroCredentials(auth *cliproxyauth.Auth) (accessToken, profileArn string) {
 		if token, ok := auth.Metadata["access_token"].(string); ok {
 			accessToken = token
 		}
+		if accessToken == "" {
+			if token, ok := auth.Metadata["api_key"].(string); ok {
+				accessToken = token
+			}
+		}
 		if arn, ok := auth.Metadata["profile_arn"].(string); ok {
 			profileArn = arn
 		}
@@ -1496,6 +1570,9 @@ func kiroCredentials(auth *cliproxyauth.Auth) (accessToken, profileArn string) {
 	// Try Attributes
 	if accessToken == "" && auth.Attributes != nil {
 		accessToken = auth.Attributes["access_token"]
+		if accessToken == "" {
+			accessToken = auth.Attributes["api_key"]
+		}
 		profileArn = auth.Attributes["profile_arn"]
 	}
 
@@ -1503,6 +1580,11 @@ func kiroCredentials(auth *cliproxyauth.Auth) (accessToken, profileArn string) {
 	if accessToken == "" && auth.Metadata != nil {
 		if token, ok := auth.Metadata["accessToken"].(string); ok {
 			accessToken = token
+		}
+		if accessToken == "" {
+			if token, ok := auth.Metadata["apiKey"].(string); ok {
+				accessToken = token
+			}
 		}
 		if arn, ok := auth.Metadata["profileArn"].(string); ok {
 			profileArn = arn
@@ -1674,8 +1756,8 @@ func determineAgenticMode(model string) (isAgentic, isChatOnly bool) {
 // with a warning logged if it is empty.
 func getEffectiveProfileArnWithWarning(auth *cliproxyauth.Auth, profileArn string) string {
 	if auth != nil && auth.Metadata != nil {
-		// Check 1: auth_method field, skip for builder-id only
-		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && authMethod == "builder-id" {
+		// Check 1: auth_method field, skip for auth methods that do not use profileArn.
+		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && (authMethod == "builder-id" || authMethod == "api-key") {
 			return ""
 		}
 		// Check 2: auth_type field (from kiro-cli tokens)
@@ -3782,6 +3864,18 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		}
 	}
 
+	if isKiroAPIKeyAuth(auth) {
+		updated := auth.Clone()
+		now := time.Now()
+		updated.UpdatedAt = now
+		updated.LastRefreshedAt = now
+		if updated.Metadata == nil {
+			updated.Metadata = make(map[string]any)
+		}
+		updated.Metadata["last_refresh"] = now.Format(time.RFC3339)
+		return updated, nil
+	}
+
 	var refreshToken string
 	var clientID, clientSecret string
 	var authMethod string
@@ -3951,9 +4045,9 @@ func (e *KiroExecutor) fetchAndSaveProfileArn(ctx context.Context, auth *cliprox
 		return ""
 	}
 
-	// Skip for Builder ID - they don't have profiles
-	if authMethod, ok := auth.Metadata["auth_method"].(string); ok && authMethod == "builder-id" {
-		log.Debugf("kiro executor: skipping profileArn fetch for builder-id auth")
+	// Skip for auth methods that do not use profiles.
+	if authMethod, ok := auth.Metadata["auth_method"].(string); ok && (authMethod == "builder-id" || authMethod == "api-key") {
+		log.Debugf("kiro executor: skipping profileArn fetch for %s auth", authMethod)
 		return ""
 	}
 

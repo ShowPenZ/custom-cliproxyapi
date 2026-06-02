@@ -111,6 +111,56 @@ func TestManagerMarkResult_ValidationRequiredDoesNotCooldownModel(t *testing.T) 
 	}
 }
 
+func TestManagerMarkResult_ReauthRequiredBlocksAuth(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "kiro-auth",
+		Provider: "kiro",
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	model := "kiro-claude-opus-4-6"
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  false,
+		Error: &Error{
+			HTTPStatus: 401,
+			Message:    "kiro authentication expired; re-login required",
+		},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to remain registered")
+	}
+	if updated.StatusMessage != "reauth_required" {
+		t.Fatalf("auth.StatusMessage = %q, want reauth_required", updated.StatusMessage)
+	}
+	if !updated.Unavailable {
+		t.Fatalf("auth.Unavailable = false, want true")
+	}
+	if !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("auth.NextRetryAfter = %v, want zero", updated.NextRetryAfter)
+	}
+	state := updated.ModelStates[model]
+	if state == nil {
+		t.Fatalf("expected model state for %q", model)
+	}
+	if state.StatusMessage != "reauth_required" {
+		t.Fatalf("state.StatusMessage = %q, want reauth_required", state.StatusMessage)
+	}
+	blocked, _, _ := isAuthBlockedForModel(updated, "another-model", time.Now())
+	if !blocked {
+		t.Fatal("expected reauth-required auth to be blocked for every model")
+	}
+}
+
 func TestApplyAuthFailureState_ValidationRequiredDoesNotCooldownAuth(t *testing.T) {
 	t.Parallel()
 

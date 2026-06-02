@@ -1757,7 +1757,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				}
 
 				statusCode := statusCodeFromResult(result.Error)
-				if isModelSupportResultError(result.Error) {
+				reauthRequired := isReauthRequiredError(result.Error)
+				if reauthRequired {
+					state.StatusMessage = "reauth_required"
+					state.NextRetryAfter = time.Time{}
+					if result.Error != nil {
+						auth.LastError = cloneError(result.Error)
+					}
+					auth.Unavailable = true
+					auth.NextRetryAfter = time.Time{}
+					auth.StatusMessage = "reauth_required"
+				} else if isModelSupportResultError(result.Error) {
 					next := now.Add(12 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "model_not_supported"
@@ -1820,7 +1830,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 				auth.Status = StatusError
 				auth.UpdatedAt = now
-				updateAggregatedAvailability(auth, now)
+				if reauthRequired {
+					auth.Unavailable = true
+					auth.NextRetryAfter = time.Time{}
+				} else {
+					updateAggregatedAvailability(auth, now)
+				}
 			} else {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
 			}
@@ -1971,6 +1986,22 @@ func isValidationRequiredError(err *Error) bool {
 	}
 	return strings.Contains(msg, "validation_required") ||
 		strings.Contains(msg, "verify your account to continue")
+}
+
+func isReauthRequiredError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(err.Code))
+	msg := strings.ToLower(strings.TrimSpace(err.Message))
+	if code == "reauth_required" || code == "invalid_grant" {
+		return true
+	}
+	return strings.Contains(msg, "re-login required") ||
+		strings.Contains(msg, "reauth_required") ||
+		strings.Contains(msg, "reauthentication required") ||
+		strings.Contains(msg, "refresh token is invalid") ||
+		strings.Contains(msg, "invalid_grant")
 }
 
 func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
@@ -2124,6 +2155,11 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 	}
 	statusCode := statusCodeFromResult(resultErr)
+	if isReauthRequiredError(resultErr) {
+		auth.StatusMessage = "reauth_required"
+		auth.NextRetryAfter = time.Time{}
+		return
+	}
 	switch statusCode {
 	case 401:
 		auth.StatusMessage = "unauthorized"

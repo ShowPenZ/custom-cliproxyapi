@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
@@ -68,6 +70,46 @@ func DoKiroImport(cfg *config.Config, options *LoginOptions) {
 		fmt.Printf("Imported as %s\n", record.Label)
 	}
 	fmt.Println("Kiro token import successful!")
+}
+
+// DoKiroAPIKeyImport saves a Kiro API key as a proxy auth file.
+func DoKiroAPIKeyImport(cfg *config.Config, options *LoginOptions, apiKey string) {
+	if options == nil {
+		options = &LoginOptions{}
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("KIRO_API_KEY"))
+	}
+	if apiKey == "" {
+		log.Errorf("Kiro API key is required")
+		fmt.Println("\nUsage: --kiro-api-key ksk_xxx")
+		fmt.Println("Or set KIRO_API_KEY and run --kiro-api-key-login")
+		return
+	}
+
+	manager := newAuthManager()
+	authenticator := &sdkAuth.KiroAuthenticator{}
+	record, err := authenticator.LoginWithAPIKey(context.Background(), cfg, &sdkAuth.LoginOptions{
+		Metadata: map[string]string{
+			"api-key": apiKey,
+			"label":   "api-key",
+		},
+		Prompt: options.Prompt,
+	})
+	if err != nil {
+		log.Errorf("Kiro API key import failed: %v", err)
+		return
+	}
+	savedPath, err := manager.SaveAuth(context.Background(), record, cfg)
+	if err != nil {
+		log.Errorf("Failed to save Kiro API key auth: %v", err)
+		return
+	}
+	if savedPath != "" {
+		fmt.Printf("Authentication saved to %s\n", savedPath)
+	}
+	fmt.Println("Kiro API key authentication saved!")
 }
 
 // DoKiroIDCLogin triggers AWS Identity Center login and saves the resulting auth file.

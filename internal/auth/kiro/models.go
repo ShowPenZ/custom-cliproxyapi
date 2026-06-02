@@ -47,6 +47,9 @@ func (k *KiroAuth) makeRequest(ctx context.Context, path string, tokenData *Kiro
 	}
 
 	accountKey := GetAccountKey(tokenData.ClientID, tokenData.RefreshToken)
+	if tokenData.APIKey != "" {
+		accountKey = GenerateAccountKey(tokenData.APIKey)
+	}
 	setRuntimeHeaders(req, tokenData.AccessToken, accountKey, tokenData.AuthMethod)
 
 	resp, err := k.httpClient.Do(req)

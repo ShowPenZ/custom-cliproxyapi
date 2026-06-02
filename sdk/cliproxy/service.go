@@ -1536,9 +1536,10 @@ func (s *Service) extractKiroTokenData(a *coreauth.Auth) *kiroauth.KiroTokenData
 		return nil
 	}
 
-	var accessToken, profileArn, refreshToken, clientID, authMethod string
+	var accessToken, profileArn, refreshToken, clientID, authMethod, apiKey string
 	if a.Attributes != nil {
 		accessToken = strings.TrimSpace(a.Attributes["access_token"])
+		apiKey = strings.TrimSpace(a.Attributes["api_key"])
 		profileArn = strings.TrimSpace(a.Attributes["profile_arn"])
 		refreshToken = strings.TrimSpace(a.Attributes["refresh_token"])
 		clientID = strings.TrimSpace(a.Attributes["client_id"])
@@ -1548,6 +1549,13 @@ func (s *Service) extractKiroTokenData(a *coreauth.Auth) *kiroauth.KiroTokenData
 		if accessToken == "" {
 			accessToken, _ = a.Metadata["access_token"].(string)
 			accessToken = strings.TrimSpace(accessToken)
+		}
+		if apiKey == "" {
+			apiKey, _ = a.Metadata["api_key"].(string)
+			apiKey = strings.TrimSpace(apiKey)
+		}
+		if accessToken == "" {
+			accessToken = apiKey
 		}
 		if profileArn == "" {
 			profileArn, _ = a.Metadata["profile_arn"].(string)
@@ -1571,6 +1579,7 @@ func (s *Service) extractKiroTokenData(a *coreauth.Auth) *kiroauth.KiroTokenData
 	}
 	return &kiroauth.KiroTokenData{
 		AccessToken:  accessToken,
+		APIKey:       apiKey,
 		ProfileArn:   profileArn,
 		RefreshToken: refreshToken,
 		ClientID:     clientID,

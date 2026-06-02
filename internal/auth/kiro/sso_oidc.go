@@ -35,11 +35,59 @@ const (
 var (
 	ErrAuthorizationPending = errors.New("authorization_pending")
 	ErrSlowDown             = errors.New("slow_down")
+	ErrReauthRequired       = errors.New("kiro reauthentication required")
 )
 
 type SSOOIDCClient struct {
 	httpClient *http.Client
 	cfg        *config.Config
+}
+
+// RefreshTokenError preserves AWS SSO OIDC refresh failure details without
+// exposing token values.
+type RefreshTokenError struct {
+	StatusCode       int
+	ErrorCode        string
+	ErrorDescription string
+	ReauthRequired   bool
+}
+
+func (e *RefreshTokenError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.ReauthRequired {
+		return "kiro refresh token is invalid; re-login required"
+	}
+	if e.ErrorCode != "" && e.ErrorDescription != "" {
+		return fmt.Sprintf("token refresh failed (status %d): %s: %s", e.StatusCode, e.ErrorCode, e.ErrorDescription)
+	}
+	if e.ErrorCode != "" {
+		return fmt.Sprintf("token refresh failed (status %d): %s", e.StatusCode, e.ErrorCode)
+	}
+	if e.ErrorDescription != "" {
+		return fmt.Sprintf("token refresh failed (status %d): %s", e.StatusCode, e.ErrorDescription)
+	}
+	return fmt.Sprintf("token refresh failed (status %d)", e.StatusCode)
+}
+
+func (e *RefreshTokenError) Is(target error) bool {
+	return target == ErrReauthRequired && e != nil && e.ReauthRequired
+}
+
+// IsReauthRequired reports whether an error means the user must login again.
+func IsReauthRequired(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrReauthRequired) {
+		return true
+	}
+	var refreshErr *RefreshTokenError
+	if errors.As(err, &refreshErr) {
+		return refreshErr.ReauthRequired || strings.EqualFold(refreshErr.ErrorCode, "invalid_grant")
+	}
+	return false
 }
 
 // NewSSOOIDCClient creates a new SSO OIDC client.
@@ -292,7 +340,20 @@ func (c *SSOOIDCClient) RefreshTokenWithRegion(ctx context.Context, clientID, cl
 
 	if resp.StatusCode != http.StatusOK {
 		log.Warnf("IDC token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d)", resp.StatusCode)
+		var errResp struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+		}
+		if json.Unmarshal(respBody, &errResp) != nil {
+			errResp.ErrorDescription = strings.TrimSpace(string(respBody))
+		}
+		errCode := strings.TrimSpace(errResp.Error)
+		return nil, &RefreshTokenError{
+			StatusCode:       resp.StatusCode,
+			ErrorCode:        errCode,
+			ErrorDescription: strings.TrimSpace(errResp.ErrorDescription),
+			ReauthRequired:   strings.EqualFold(errCode, "invalid_grant"),
+		}
 	}
 
 	var result CreateTokenResponse

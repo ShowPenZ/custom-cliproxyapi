@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -94,6 +96,38 @@ func (a *KiroAuthenticator) ImportFromKiroIDE(ctx context.Context, cfg *config.C
 	return a.createAuthRecord(tokenData, "ide-import")
 }
 
+// LoginWithAPIKey creates a long-lived Kiro API key auth record.
+func (a *KiroAuthenticator) LoginWithAPIKey(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
+	_ = ctx
+	if cfg == nil {
+		return nil, fmt.Errorf("kiro auth: configuration is required")
+	}
+	applyKiroFingerprintConfig(cfg)
+	apiKey := ""
+	label := ""
+	email := ""
+	region := kiroauth.DefaultKiroRegion
+	if opts != nil && opts.Metadata != nil {
+		apiKey = strings.TrimSpace(opts.Metadata["api-key"])
+		label = strings.TrimSpace(opts.Metadata["label"])
+		email = strings.TrimSpace(opts.Metadata["email"])
+		if r := strings.TrimSpace(opts.Metadata["region"]); r != "" {
+			region = r
+		}
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("kiro api key is required")
+	}
+	return a.createAuthRecord(&kiroauth.KiroTokenData{
+		AccessToken: apiKey,
+		APIKey:      apiKey,
+		AuthMethod:  "api-key",
+		Provider:    "Kiro API Key",
+		Email:       email,
+		Region:      region,
+	}, firstNonEmpty(label, "api-key"))
+}
+
 // Refresh refreshes a Kiro auth record.
 func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) (*coreauth.Auth, error) {
 	if auth == nil || auth.Metadata == nil {
@@ -104,12 +138,20 @@ func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, aut
 	if updated.Metadata == nil {
 		updated.Metadata = map[string]any{}
 	}
+	authMethod, _ := auth.Metadata["auth_method"].(string)
+	authMethod = strings.ToLower(strings.TrimSpace(authMethod))
+	if authMethod == "api-key" {
+		now := time.Now().UTC()
+		updated.LastRefreshedAt = now
+		updated.UpdatedAt = now
+		updated.Metadata["last_refresh"] = now.Format(time.RFC3339)
+		return updated, nil
+	}
 	refreshToken, _ := auth.Metadata["refresh_token"].(string)
 	refreshToken = strings.TrimSpace(refreshToken)
 	if refreshToken == "" {
 		return updated, nil
 	}
-	authMethod, _ := auth.Metadata["auth_method"].(string)
 	clientIDHash, _ := auth.Metadata["client_id_hash"].(string)
 	clientID, _ := updated.Metadata["client_id"].(string)
 	clientSecret, _ := updated.Metadata["client_secret"].(string)
@@ -192,16 +234,25 @@ func (a *KiroAuthenticator) createAuthRecord(tokenData *kiroauth.KiroTokenData, 
 	if tokenData.Email == "" {
 		tokenData.Email = kiroauth.ExtractEmailFromJWT(tokenData.AccessToken)
 	}
-	expiresAt, err := time.Parse(time.RFC3339, tokenData.ExpiresAt)
-	if err != nil {
-		expiresAt = time.Now().Add(time.Hour)
-		tokenData.ExpiresAt = expiresAt.Format(time.RFC3339)
+	apiKeyAuth := strings.EqualFold(strings.TrimSpace(tokenData.AuthMethod), "api-key") || strings.TrimSpace(tokenData.APIKey) != ""
+	var expiresAt time.Time
+	if !apiKeyAuth {
+		var err error
+		expiresAt, err = time.Parse(time.RFC3339, tokenData.ExpiresAt)
+		if err != nil {
+			expiresAt = time.Now().Add(time.Hour)
+			tokenData.ExpiresAt = expiresAt.Format(time.RFC3339)
+		}
 	}
 
-	idPart := extractKiroIdentifier(tokenData.Email, tokenData.ProfileArn, tokenData.ClientID)
+	idPart := extractKiroIdentifier(tokenData.Email, tokenData.ProfileArn, firstNonEmpty(tokenData.ClientID, tokenData.APIKey))
 	label := "kiro-" + strings.Trim(kiroauth.SanitizeEmailForFilename(source), "-_")
 	if label == "kiro-" {
 		label = "kiro"
+	}
+	if apiKeyAuth && tokenData.Email == "" && tokenData.APIKey != "" {
+		sum := sha256.Sum256([]byte(tokenData.APIKey))
+		idPart = "api-key-" + hex.EncodeToString(sum[:4])
 	}
 	fileName := fmt.Sprintf("%s-%s.json", label, idPart)
 	now := time.Now().UTC()
@@ -221,25 +272,41 @@ func (a *KiroAuthenticator) createAuthRecord(tokenData *kiroauth.KiroTokenData, 
 		"region":         tokenData.Region,
 		"start_url":      tokenData.StartURL,
 	}
+	if apiKeyAuth {
+		metadata["api_key"] = tokenData.APIKey
+		metadata["refresh_interval_seconds"] = int64((24 * time.Hour * 365 * 10).Seconds())
+		delete(metadata, "refresh_token")
+		delete(metadata, "expires_at")
+	} else if strings.TrimSpace(tokenData.APIKey) != "" {
+		metadata["api_key"] = tokenData.APIKey
+	}
 	attributes := map[string]string{
 		"profile_arn": tokenData.ProfileArn,
 		"source":      source,
 		"email":       tokenData.Email,
 		"region":      tokenData.Region,
 	}
+	if apiKeyAuth {
+		attributes["api_key"] = tokenData.APIKey
+		attributes["access_token"] = tokenData.AccessToken
+	}
 
-	return &coreauth.Auth{
-		ID:               fileName,
-		Provider:         "kiro",
-		FileName:         fileName,
-		Label:            label,
-		Status:           coreauth.StatusActive,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-		Metadata:         metadata,
-		Attributes:       attributes,
-		NextRefreshAfter: expiresAt.Add(-20 * time.Minute),
-	}, nil
+	record := &coreauth.Auth{
+		ID:              fileName,
+		Provider:        "kiro",
+		FileName:        fileName,
+		Label:           label,
+		Status:          coreauth.StatusActive,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Metadata:        metadata,
+		Attributes:      attributes,
+		LastRefreshedAt: now,
+	}
+	if !apiKeyAuth {
+		record.NextRefreshAfter = expiresAt.Add(-20 * time.Minute)
+	}
+	return record, nil
 }
 
 func extractKiroIdentifier(email, profileARN, clientID string) string {
@@ -273,4 +340,13 @@ func applyKiroFingerprintConfig(cfg *config.Config) {
 		KiroVersion:         fp.KiroVersion,
 		KiroHash:            fp.KiroHash,
 	})
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

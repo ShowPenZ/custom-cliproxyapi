@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -54,6 +56,46 @@ func TestKiroExecutorCountTokens(t *testing.T) {
 	}
 	if body.Count <= 0 {
 		t.Fatalf("CountTokens() count = %d, want > 0", body.Count)
+	}
+}
+
+func TestKiroCredentialsUsesAPIKey(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Provider: "kiro",
+		Metadata: map[string]any{
+			"type":        "kiro",
+			"auth_method": "api-key",
+			"api_key":     "ksk_test_secret",
+		},
+	}
+
+	credential, profileArn := kiroCredentials(auth)
+	if credential != "ksk_test_secret" {
+		t.Fatalf("credential = %q, want api key", credential)
+	}
+	if profileArn != "" {
+		t.Fatalf("profileArn = %q, want empty", profileArn)
+	}
+	if !isKiroAPIKeyAuth(auth) {
+		t.Fatal("isKiroAPIKeyAuth() = false")
+	}
+}
+
+func TestKiroPrepareRequestUsesAPIKeyBearer(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Provider: "kiro",
+		Metadata: map[string]any{
+			"type":        "kiro",
+			"auth_method": "api-key",
+			"api_key":     "ksk_test_secret",
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "https://q.us-east-1.amazonaws.com/", nil)
+	if err := NewKiroExecutor(nil).PrepareRequest(req, auth); err != nil {
+		t.Fatalf("PrepareRequest() error = %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer ksk_test_secret" {
+		t.Fatalf("Authorization = %q", got)
 	}
 }
 

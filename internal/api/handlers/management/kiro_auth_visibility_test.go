@@ -19,12 +19,14 @@ func TestKiroRuntimeAuthEntryDoesNotExposeSecrets(t *testing.T) {
 			"type":          "kiro",
 			"email":         "user@example.com",
 			"access_token":  "access-secret",
+			"api_key":       "ksk-secret",
 			"refresh_token": "refresh-secret",
 			"client_secret": "client-secret",
 			"profile_arn":   "arn:aws:sso:::permissionSet/example",
 		},
 		Attributes: map[string]string{
 			"access_token":  "access-secret",
+			"api_key":       "ksk-secret",
 			"refresh_token": "refresh-secret",
 			"client_secret": "client-secret",
 		},
@@ -50,6 +52,7 @@ func TestKiroAuthFileEntryDoesNotExposeSecrets(t *testing.T) {
 			"type":          "kiro",
 			"email":         "user@example.com",
 			"access_token":  "access-secret",
+			"api_key":       "ksk-secret",
 			"refresh_token": "refresh-secret",
 			"client_secret": "client-secret",
 			"auth_method":   "kiro-cli",
@@ -57,6 +60,7 @@ func TestKiroAuthFileEntryDoesNotExposeSecrets(t *testing.T) {
 		Attributes: map[string]string{
 			"path":          path,
 			"access_token":  "access-secret",
+			"api_key":       "ksk-secret",
 			"refresh_token": "refresh-secret",
 			"client_secret": "client-secret",
 		},
@@ -81,7 +85,7 @@ func assertKiroManagementEntrySafe(t *testing.T, entry map[string]any) {
 	if got := entry["account"]; got != "user@example.com" {
 		t.Fatalf("account = %v, want user@example.com", got)
 	}
-	for _, key := range []string{"access_token", "refresh_token", "client_secret", "profile_arn", "auth_method"} {
+	for _, key := range []string{"access_token", "api_key", "refresh_token", "client_secret", "profile_arn", "auth_method"} {
 		if _, ok := entry[key]; ok {
 			t.Fatalf("management entry exposed sensitive/internal key %q: %#v", key, entry[key])
 		}

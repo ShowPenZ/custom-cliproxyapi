@@ -70,6 +70,8 @@ func main() {
 	var kimiLogin bool
 	var kiroCLILogin bool
 	var kiroImport bool
+	var kiroAPIKeyLogin bool
+	var kiroAPIKey string
 	var kiroIDCLogin bool
 	var kiroIDCStartURL string
 	var kiroIDCRegion string
@@ -96,6 +98,8 @@ func main() {
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
 	flag.BoolVar(&kiroCLILogin, "kiro-cli-login", false, "Login to Kiro using native Kiro CLI OAuth")
 	flag.BoolVar(&kiroImport, "kiro-import", false, "Import Kiro IDE token from the default local token file")
+	flag.BoolVar(&kiroAPIKeyLogin, "kiro-api-key-login", false, "Import a Kiro API key from KIRO_API_KEY")
+	flag.StringVar(&kiroAPIKey, "kiro-api-key", "", "Import a Kiro API key value")
 	flag.BoolVar(&kiroIDCLogin, "kiro-idc-login", false, "Login to Kiro using AWS Identity Center")
 	flag.StringVar(&kiroIDCStartURL, "kiro-idc-start-url", "", "AWS Identity Center start URL for Kiro login")
 	flag.StringVar(&kiroIDCRegion, "kiro-idc-region", "", "AWS Identity Center OIDC region for Kiro login")
@@ -137,6 +141,12 @@ func main() {
 
 	// Parse the command-line flags.
 	flag.Parse()
+	kiroAPIKeyFlagSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "kiro-api-key" {
+			kiroAPIKeyFlagSet = true
+		}
+	})
 
 	// Core application variables.
 	var err error
@@ -502,6 +512,8 @@ func main() {
 		cmd.DoKiroCLILogin(cfg, options)
 	} else if kiroImport {
 		cmd.DoKiroImport(cfg, options)
+	} else if kiroAPIKeyLogin || kiroAPIKeyFlagSet {
+		cmd.DoKiroAPIKeyImport(cfg, options, kiroAPIKey)
 	} else if kiroIDCLogin {
 		cmd.DoKiroIDCLogin(cfg, options, kiroIDCStartURL, kiroIDCRegion, kiroIDCFlow)
 	} else {

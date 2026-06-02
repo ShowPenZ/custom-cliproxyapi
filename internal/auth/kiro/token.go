@@ -16,6 +16,7 @@ import (
 type KiroTokenData struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
+	APIKey       string `json:"apiKey,omitempty"`
 	ProfileArn   string `json:"profileArn"`
 	ExpiresAt    string `json:"expiresAt"`
 	AuthMethod   string `json:"authMethod"`
@@ -68,6 +69,9 @@ func LoadKiroTokenFromPath(tokenPath string) (*KiroTokenData, error) {
 		return nil, fmt.Errorf("failed to parse Kiro token file: %w", err)
 	}
 	token.normalize()
+	if token.AccessToken == "" && token.APIKey != "" {
+		token.AccessToken = token.APIKey
+	}
 	if token.AccessToken == "" {
 		return nil, fmt.Errorf("access token is empty in Kiro token file")
 	}
@@ -89,6 +93,7 @@ func (t *KiroTokenData) normalize() {
 	}
 	t.AccessToken = strings.TrimSpace(t.AccessToken)
 	t.RefreshToken = strings.TrimSpace(t.RefreshToken)
+	t.APIKey = strings.TrimSpace(t.APIKey)
 	t.ProfileArn = strings.TrimSpace(t.ProfileArn)
 	t.ExpiresAt = strings.TrimSpace(t.ExpiresAt)
 	t.AuthMethod = strings.ToLower(strings.TrimSpace(t.AuthMethod))

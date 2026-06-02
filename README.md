@@ -79,11 +79,13 @@ Kiro can be used through the OpenAI-compatible `/v1/chat/completions` API and th
 cliproxyapi --kiro-cli-login
 cliproxyapi --kiro-import /path/to/kiro-token.json
 cliproxyapi --kiro-idc-login --kiro-idc-flow auth-code
+cliproxyapi --kiro-api-key ksk_xxxxx
+# or: KIRO_API_KEY=ksk_xxxxx cliproxyapi --kiro-api-key-login
 ```
 
 Use `/v1/models` to inspect available `kiro-*` models. Dynamic Kiro model discovery is attempted automatically and falls back to the built-in static model table.
 
-Common failures: `401` usually means the token expired or is invalid; `403` usually means the account/profile lacks access; `429` is quota or rate limiting; IDC login requires the correct `--kiro-idc-start-url` and `--kiro-idc-region`; auth-code login needs a free local callback port.
+Common failures: `401` usually means the token expired or is invalid; `403` usually means the account/profile lacks access; `429` is quota or rate limiting; IDC login requires the correct `--kiro-idc-start-url` and `--kiro-idc-region`; auth-code login needs a free local callback port. Kiro API keys require your Kiro organization/admin to enable API key generation.
 
 ## Amp CLI Support
 
